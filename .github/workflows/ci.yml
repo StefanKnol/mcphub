@@ -1,0 +1,120 @@
+name: CI & Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push to the same ref makes an in-flight run pointless; multi-arch
+  # image builds are slow enough that letting them pile up is wasteful.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev --python ${{ matrix.python }}
+
+      - name: Run tests
+        run: uv run --python ${{ matrix.python }} pytest -q
+
+  publish:
+    name: Build and publish image
+    runs-on: ubuntu-latest
+    # Gates the push on the tests: an image that fails its own suite should
+    # never reach the registry Unraid pulls from.
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        # Pull requests from forks cannot read secrets, so the build below still
+        # runs on a PR to prove the Dockerfile is sound — it just does not push.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # The username is masked in logs because it comes from a secret, so
+          # tags render as ***/mcphub. To read them, set a repository variable
+          # DOCKERHUB_USERNAME too and use vars.DOCKERHUB_USERNAME here.
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/mcphub
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the built image
+        # Loads an amd64-only build on the runner and checks the app actually
+        # starts and serves /healthz. A green multi-arch build only proves the
+        # image assembled, not that it runs.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: mcphub:smoke
+          cache-from: type=gha
+
+      - name: Run smoke test
+        run: |
+          docker run -d --name smoke -p 8080:8080 \
+            -e MCPHUB_DEV=1 -e MCPHUB_PUBLIC_URL=http://127.0.0.1:8080 \
+            -v "$PWD/smoke-data:/data" mcphub:smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              echo "healthz OK"
+              curl -fsS http://127.0.0.1:8080/.well-known/oauth-authorization-server | head -c 200; echo
+              docker logs smoke 2>&1 | grep -q "First run: created the 'admin' account" \
+                && echo "bootstrap OK" || { echo "admin bootstrap missing"; exit 1; }
+              docker rm -f smoke >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "container never became healthy"; docker logs smoke; exit 1

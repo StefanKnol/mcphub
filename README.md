@@ -51,6 +51,43 @@ Sign in, change it, add a backend, then paste the endpoint URL shown on the
 dashboard into Claude as a custom connector. Claude registers itself, you sign
 in, and you approve the connection.
 
+### Deploying
+
+Every push to `main` runs the test suite and, if it passes, builds a
+multi-arch image (amd64 + arm64) and pushes it to Docker Hub as
+`<user>/mcphub:latest`. Tags matching `v*` also publish semver tags. Pull
+requests build the image to prove the Dockerfile still works, but do not push.
+
+Two repository secrets drive it:
+
+| Secret | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Your Docker Hub account name. |
+| `DOCKERHUB_TOKEN` | A Docker Hub **access token** with Read/Write, not your account password. |
+
+```bash
+gh secret set DOCKERHUB_USERNAME
+gh secret set DOCKERHUB_TOKEN
+```
+
+Create the token at Docker Hub → Account Settings → Personal access tokens. A
+token is scoped and revocable on its own; an account password is neither, and
+it also unlocks the account itself.
+
+#### On Unraid
+
+Add a container with the published image and:
+
+| Setting | Value |
+| --- | --- |
+| Repository | `<user>/mcphub:latest` |
+| Port | `8080` → `8080` |
+| Path | `/mnt/user/appdata/mcphub` → `/data` |
+| Variable | `MCPHUB_PUBLIC_URL` = the URL your reverse proxy serves |
+
+Then point a proxy host at it with a real certificate. The first-run admin
+password is printed once, in the container log.
+
 ### Configuration
 
 Only these are environment variables. Everything else lives in the database.

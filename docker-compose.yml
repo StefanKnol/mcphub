@@ -1,15 +1,20 @@
 services:
   mcphub:
-    build: .
-    # image: ghcr.io/you/mcphub:latest   # once you publish one
+    # Published by .github/workflows/ci.yml on every push to main.
+    # Set DOCKERHUB_USERNAME in a .env beside this file, or replace inline.
+    image: ${DOCKERHUB_USERNAME:-stefanknol}/mcphub:latest
+    # Swap the line above for this to build from a checkout instead:
+    # build: .
     container_name: mcphub
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
+      # Holds hub.db and master.key. Back this up — losing master.key makes
+      # every stored backend credential permanently unreadable.
       - ./data:/data
     environment:
       # Must be the URL clients actually reach, i.e. the reverse proxy's.
       # OAuth discovery compares issuer strings exactly, so a mismatch here
-      # fails in confusing ways.
+      # fails discovery rather than merely degrading it.
       MCPHUB_PUBLIC_URL: "https://mcp.example.com"
