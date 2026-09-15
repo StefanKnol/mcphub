@@ -9,16 +9,15 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "jinja2>=3.1",
     "cryptography>=44.0",
-    "librouteros>=3.4.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx2>=2.5.0"]
 
-# Backends are plugins. Built-ins register here exactly like third-party ones
-# would, so there is no privileged path into the registry.
+# Backends are plugins, discovered through this entry point group. A plugin is
+# any pip-installable package; the proxy ships here only because it is the one
+# backend that is about the hub itself rather than about a particular device.
 [project.entry-points."mcphub.plugins"]
-mikrotik = "mcphub.plugins.builtin.mikrotik:PLUGIN"
 mcp-proxy = "mcphub.plugins.builtin.mcpproxy:PLUGIN"
 
 [build-system]

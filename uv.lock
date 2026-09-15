@@ -359,15 +359,6 @@ wheels = [
 ]
 
 [[package]]
-name = "librouteros"
-version = "4.2.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/62/45/d39b0f87966ae9d151c179c914f52a4d58ef39fa2aae686b61380bb48875/librouteros-4.2.1.tar.gz", hash = "sha256:426542a01f77a8cb006f6ad2b0f627cc642ed8eed54196210b8619bca3de8408", size = 22351, upload-time = "2026-09-07T19:43:05.109Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/22/43c105eae2254a85fddf0499111d699b667f3682d3d1431b618c71939bc8/librouteros-4.2.1-py3-none-any.whl", hash = "sha256:d0460ba82fe7dee9feb66e9064e355b1f2891cccdec8ad910ea6b853c77ce38e", size = 25392, upload-time = "2026-09-07T19:43:04.177Z" },
-]
-
-[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -486,7 +477,6 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "jinja2" },
-    { name = "librouteros" },
     { name = "mcp" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -503,7 +493,6 @@ requires-dist = [
     { name = "cryptography", specifier = ">=44.0" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.5.0" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "librouteros", specifier = ">=3.4.1" },
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },

@@ -123,44 +123,29 @@ successful sign-in, which looks like an authentication fault and is not one.
 Back up `/data`. Losing `master.key` makes every stored backend credential
 permanently unreadable.
 
-## The MikroTik plugin
+## MikroTik
 
-Talks to RouterOS over the **binary API** (8729 with TLS, or 8728 plaintext),
-not by driving the CLI over SSH.
+MikroTik lives in its own package now:
+**[mikrotik-mcp](https://github.com/StefanKnol/mikrotik-mcp)**. It is a
+standalone MCP server, so it works with any client, not only this hub.
 
-That choice is the point. Scraping `/ip firewall filter print` gives you the
-CLI's *positional* numbers, which are not the rules' identities. The server
-this replaces listed rules by position and then looked them up for writing with
-`where .id=<position>` — a predicate that can never match — so every write
-failed on rules that existed. Had it matched, it would have been worse:
-positions shift when rules are added, removed, or when a dynamic rule appears,
-so the write would have hit a different rule than the caller meant.
-
-The binary API returns the real `.id` (`*7`, `*1f`) on every read. So:
-
-- every read returns `id`, and every write takes one back;
-- list results also carry `position`, which is display-only and **refused** for
-  writes, with an error that says why;
-- writes read back what they wrote, so a change can be verified rather than
-  assumed;
-- `remove_firewall_rule` takes an optional `confirm_comment` and returns the
-  rule it deleted.
-
-Enable the service on the router and use a dedicated account, not `admin`:
+Add it here as a launched server — a proxy backend with the command:
 
 ```
-/ip service enable api-ssl
-/user group add name=mcp policy=api,read,write,test,policy
-/user add name=mcp-agent group=mcp password=<strong-password>
+uvx mikrotik-mcp
 ```
 
-Set the TLS fingerprint in the backend's settings if you can. MikroTik's
-API-SSL certificate is self-signed, so ordinary CA validation cannot succeed
-against a stock device; pinning is what makes the connection authenticated
-rather than merely encrypted.
+and `MIKROTIK_HOST`, `MIKROTIK_USERNAME`, `MIKROTIK_PASSWORD` in the
+Environment field, where they are encrypted at rest. It then runs in its own
+process and cannot read credentials held for other backends.
 
-`ros_list` reads any RouterOS path, which covers everything without a dedicated
-tool. There is deliberately no generic *write* escape hatch.
+That package also ships an `mcphub.plugins` entry point, so it can be loaded
+in-process with typed settings fields instead, if you install it into the hub's
+environment and accept that an in-process plugin sees everything the hub holds.
+
+> Upgrading from a build where MikroTik was bundled: an existing `mikrotik`
+> backend will report its plugin as missing and stay unmounted. Re-create it as
+> a launched server with the command above; nothing else changes.
 
 ## The proxy plugin
 
@@ -287,13 +272,17 @@ MCPHUB_DEV=1 MCPHUB_DATA_DIR=./data MCPHUB_PUBLIC_URL=http://127.0.0.1:8080 uv r
 
 ## Status
 
-Built and tested end to end: the hub, the OAuth server, the config UI, the
-MikroTik plugin (24 tools) and the proxy plugin. Per-backend token isolation
-and the tool allowlist are verified by test, not assumed — including that a
-filtered-out tool cannot be called.
+Built and tested end to end: the hub, the OAuth server, the config UI and the
+proxy plugin, over both transports. Per-backend token isolation and the tool
+allowlist are verified by test, not assumed — including that a filtered-out
+tool cannot be called.
 
-The proxy is exercised against a real Unraid Management Agent: 126 tools
-discovered, narrowed to 5, schemas preserved, live calls forwarded.
+The proxy is exercised against a real Unraid Management Agent over HTTP (126
+tools discovered, narrowed to 5, schemas preserved, live calls forwarded) and
+against a published PyPI server launched over stdio.
+
+The hub ships one backend of its own, the proxy. Everything else is a package:
+see [mikrotik-mcp](https://github.com/StefanKnol/mikrotik-mcp).
 
 Known limits:
 
