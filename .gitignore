@@ -2,7 +2,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/
+# Anchored: the runtime volume is ./data at the root. Unanchored, this also
+# swallowed src/mcphub/data/verified.json, which ships with the package.
+/data/
 *.db
 *.db-wal
 *.db-shm

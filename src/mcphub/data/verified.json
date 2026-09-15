@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "$comment": "Observed fields are written by scripts/verify_servers.py, which launches each server and records what it saw. Entries are keyed by official MCP registry name, since that is what the browser matches against. Do not hand-edit status/toolCount/lastVerified: an entry is worth something only because a machine checked it.",
+  "servers": [
+    {
+      "name": "io.github.StefanKnol/mikrotik-mcp",
+      "note": "Built for mcphub. Addresses rules by real .id, so writes cannot hit the wrong one.",
+      "verifyEnv": {
+        "MIKROTIK_HOST": "192.0.2.1",
+        "MIKROTIK_USERNAME": "verify",
+        "MIKROTIK_PASSWORD": "verify",
+        "MIKROTIK_TIMEOUT": "2"
+      },
+      "status": "unavailable",
+      "toolCount": null,
+      "lastVerified": null,
+      "detail": "not published to the registry yet"
+    }
+  ]
+}
