@@ -316,10 +316,15 @@ against a published PyPI server launched over stdio.
 The hub ships one backend of its own, the proxy. Everything else is a package:
 see [mikrotik-mcp](https://github.com/StefanKnol/mikrotik-mcp).
 
+Tools and resources are proxied, including each tool's `_meta`, so an
+upstream using [MCP Apps](https://modelcontextprotocol.io) keeps its interface
+through the hop: the `ui://` resource its tool points at is exposed and read
+through on demand, with its `text/html;profile=mcp-app` type and `_meta.ui`
+sandbox policy intact.
+
 Known limits:
 
-- Only tools are proxied. The Unraid agent also exposes 6 prompts and 5
-  resources; those are not forwarded yet.
+- **Prompts are not proxied.** A server offering prompts keeps them to itself.
 - Non-text tool results (images, embedded resources) are described rather than
   passed through.
 - Schema synthesis is exact for flat object schemas. A deeply nested upstream

@@ -20,6 +20,8 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.resources import FunctionResource
+from mcp.types import Resource as UpstreamResource
 from mcp.types import Tool as UpstreamTool
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -176,8 +178,59 @@ def mirror_tool(mcp: MCPServer, upstream: Upstream, tool: UpstreamTool) -> bool:
         title=tool.title,
         description=description or None,
         annotations=_annotations_for(tool),
+        # Carries the MCP Apps binding (`_meta.ui.resourceUri`) among anything
+        # else the upstream attached. Dropping it silently turns a tool with a
+        # user interface into a plain one, with nothing to indicate why.
+        meta=tool.meta,
         # The upstream already decided its output shape; re-deriving one from
         # our synthesised `-> str` would advertise a schema that is not true.
         structured_output=False,
     )
+    return True
+
+
+def _resource_text(result: Any) -> str:
+    """Flatten a ReadResourceResult into what FunctionResource returns."""
+    for content in getattr(result, "contents", None) or []:
+        text = getattr(content, "text", None)
+        if text is not None:
+            return text
+        blob = getattr(content, "blob", None)
+        if blob is not None:
+            return blob
+    return ""
+
+
+def mirror_resource(mcp: MCPServer, upstream: Upstream, resource: UpstreamResource) -> bool:
+    """Re-expose one upstream resource, fetched on read rather than cached.
+
+    MCP Apps serves a tool's interface as a `ui://` resource, so a proxy that
+    forwards tools but not resources hands the client a tool pointing at an
+    interface it cannot fetch. Contents are read through on demand: a UI
+    resource can change with the upstream without this hub being resaved.
+    """
+    uri = str(resource.uri)
+
+    async def read() -> str:
+        try:
+            return _resource_text(await upstream.read_resource(uri))
+        except UpstreamError as exc:
+            raise ValueError(f"{uri}: {exc}") from exc
+
+    try:
+        mcp.add_resource(FunctionResource(
+            uri=uri,
+            name=resource.name or uri,
+            title=resource.title,
+            description=resource.description,
+            mime_type=resource.mime_type,
+            # The `text/html;profile=mcp-app` type and the `_meta.ui` block
+            # (csp, permissions) are what let a host render this safely, so
+            # they travel with it.
+            meta=resource.meta,
+            fn=read,
+        ))
+    except Exception:  # noqa: BLE001 - one bad resource must not stop the rest
+        log.exception("could not mirror resource %s", uri)
+        return False
     return True

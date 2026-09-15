@@ -23,15 +23,17 @@ from collections.abc import Sequence
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import Resource as UpstreamResource
 from mcp.types import Tool as UpstreamTool
 
 from ...base import BackendInstance, CheckResult, ConfigField, Option, PluginDefaults
-from .mirror import mirror_tool
+from .mirror import mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
 
 log = logging.getLogger(__name__)
 
 CATALOG_KEY = "tool_catalog"
+RESOURCE_CATALOG_KEY = "resource_catalog"
 ALLOW_KEY = "tools"
 REGISTRY_ENV_KEY = "registry_env"
 """Cached declaration of the variables an upstream asks for, from its registry
@@ -117,6 +119,15 @@ def _catalog(instance: BackendInstance) -> list[UpstreamTool]:
         return [UpstreamTool.model_validate(t) for t in json.loads(raw)]
     except Exception:  # noqa: BLE001 - a stale cache must not break mounting
         log.warning("backend %s: tool catalogue could not be read", instance.slug)
+        return []
+
+
+def _resource_catalog(instance: BackendInstance) -> list[UpstreamResource]:
+    raw = instance.config.get(RESOURCE_CATALOG_KEY) or "[]"
+    try:
+        return [UpstreamResource.model_validate(r) for r in json.loads(raw)]
+    except Exception:  # noqa: BLE001 - a stale cache must not break mounting
+        log.warning("backend %s: resource catalogue could not be read", instance.slug)
         return []
 
 
@@ -262,6 +273,16 @@ class McpProxyPlugin(PluginDefaults):
             if mirror_tool(mcp, upstream, tool):
                 exposed += 1
 
+        # Resources are not filtered by the tool allowlist. A `ui://` resource
+        # exists to be fetched by a tool that is exposed, and withholding it
+        # would leave that tool pointing at an interface the client cannot load.
+        resources = 0
+        for resource in _resource_catalog(instance):
+            if mirror_resource(mcp, upstream, resource):
+                resources += 1
+        if resources:
+            log.info("backend %s proxies %d upstream resources", instance.slug, resources)
+
         if not catalog:
             log.warning(
                 "backend %s has no cached tool catalogue; open its settings and save "
@@ -311,6 +332,7 @@ class McpProxyPlugin(PluginDefaults):
         upstream = _upstream(instance)
         try:
             tools = await upstream.list_tools()
+            resources = await upstream.list_resources()
             info = await upstream.server_info()
         except Exception:  # noqa: BLE001 - saving must succeed even if upstream is down
             log.info("backend %s: upstream unreachable at save, keeping the previous catalogue",
@@ -320,6 +342,9 @@ class McpProxyPlugin(PluginDefaults):
             await upstream.close()
         return {
             CATALOG_KEY: json.dumps([t.model_dump(by_alias=True, exclude_none=True) for t in tools]),
+            RESOURCE_CATALOG_KEY: json.dumps(
+                [r.model_dump(by_alias=True, exclude_none=True) for r in resources]
+            ),
             "upstream_instructions": info.get("instructions") or "",
         }
 
