@@ -145,15 +145,22 @@ jobs:
               docker logs smoke 2>&1 | grep -q "First run: created the 'admin' account" \
                 && echo "admin bootstrap OK" || { echo "admin bootstrap missing"; exit 1; }
 
-              # Privileges were actually dropped: root here would mean the
-              # entrypoint silently skipped it.
-              uid=$(docker exec smoke id -u)
-              [ "$uid" = "99" ] && echo "running as uid 99 OK" \
-                || { echo "expected uid 99, got $uid"; exit 1; }
+              # Privileges were actually dropped. Not `docker exec id -u`:
+              # exec starts a new process as the image's configured user (root
+              # here, so the entrypoint can chown), which says nothing about
+              # what the app is running as. PID 1 *is* the app, the entrypoint
+              # having exec'd into it, so read its uid from /proc.
+              uid=$(docker exec smoke awk '/^Uid:/{print $2}' /proc/1/status)
+              [ "$uid" = "99" ] && echo "app runs as uid 99 OK" \
+                || { echo "expected app uid 99, got $uid"; exit 1; }
 
-              # And the database really landed on the mounted volume.
-              sudo test -f /tmp/smoke-data/hub.db && echo "hub.db on the volume OK" \
+              # And the database landed on the mounted volume, owned by that
+              # user — which is the end-to-end proof the chown-then-drop worked.
+              sudo test -f /tmp/smoke-data/hub.db \
                 || { echo "hub.db missing from /data"; exit 1; }
+              owner=$(sudo stat -c %u:%g /tmp/smoke-data/hub.db)
+              [ "$owner" = "99:100" ] && echo "hub.db owned by 99:100 OK" \
+                || { echo "expected hub.db owned by 99:100, got $owner"; exit 1; }
 
               docker rm -f smoke >/dev/null
               exit 0
