@@ -13,7 +13,7 @@
   <form method="post" action="/login{% if auth_request %}?req={{ auth_request }}{% endif %}">
     <input type="hidden" name="next" value="{{ next_url }}">
     <div class="field"><label for="u">Username</label>
-      <input id="u" name="username" autocomplete="username" autofocus required></div>
+      <input id="u" type="text" name="username" autocomplete="username" autofocus required></div>
     <div class="field"><label for="p">Password</label>
       <input id="p" type="password" name="password" autocomplete="current-password" required></div>
     <button class="primary" type="submit" style="width:100%">

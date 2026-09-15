@@ -12,12 +12,12 @@
   <div class="row">
     <div class="field">
       <label for="title">Display name</label>
-      <input id="title" name="title" value="{{ title }}" required>
+      <input id="title" type="text" name="title" value="{{ title }}" required>
       <p class="help">Shown in the backend list and to the MCP client.</p>
     </div>
     <div class="field">
       <label for="slug">URL name</label>
-      <input id="slug" name="slug" value="{{ slug }}" pattern="[a-z0-9][a-z0-9-]{0,38}[a-z0-9]" required>
+      <input id="slug" type="text" name="slug" value="{{ slug }}" pattern="[a-z0-9][a-z0-9-]{0,38}[a-z0-9]" required>
       <p class="help">The endpoint becomes <code>{{ public_url }}/mcp/<em>this</em></code>.
         Changing it breaks connectors already pointed at the old address.</p>
     </div>

@@ -20,6 +20,7 @@ from starlette.templating import Jinja2Templates
 
 from ..crypto import hash_password, verify_password
 from ..db import utcnow
+from .. import registry as mcp_registry
 from ..plugins.base import BackendInstance, ConfigField
 from .session import current_user, end_session, start_session
 
@@ -31,7 +32,25 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 # Reserved because a backend mounted at one of these would shadow the hub's
 # own routes and, in the case of the OAuth endpoints, break authentication
 # for every other backend at the same time.
-RESERVED_SLUGS = {"login", "logout", "account", "backends", "healthz", "mcp", "authorize", "token", "register"}
+RESERVED_SLUGS = {"login", "logout", "account", "backends", "healthz", "mcp", "authorize",
+                  "token", "register", "registry", "revoke"}
+
+
+def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: bool,
+                  config: dict[str, Any], secrets: dict[str, Any], row: Any = None) -> None:
+    blob = hub.secrets.seal(secrets) if secrets else None
+    if row is None:
+        hub.db.execute(
+            "INSERT INTO backends (slug, plugin_id, title, enabled, config_json, secrets_blob, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (slug, plugin_id, title, int(enabled), json.dumps(config), blob, utcnow(), utcnow()),
+        )
+    else:
+        hub.db.execute(
+            "UPDATE backends SET slug = ?, title = ?, enabled = ?, config_json = ?, "
+            "secrets_blob = ?, updated_at = ? WHERE id = ?",
+            (slug, title, int(enabled), json.dumps(config), blob, utcnow(), row["id"]),
+        )
 
 
 def build(hub: Any) -> list[Route]:
@@ -253,21 +272,10 @@ def build(hub: Any) -> list[Route]:
         except Exception:  # noqa: BLE001 - saving is the priority
             log.exception("on_save hook failed for backend %s", new_slug)
 
-        blob = hub.secrets.seal(secret) if secret else None
-        if row is None:
-            hub.db.execute(
-                "INSERT INTO backends (slug, plugin_id, title, enabled, config_json, secrets_blob, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_slug, plugin.id, title, int(enabled), json.dumps(config), blob, utcnow(), utcnow()),
-            )
-        else:
-            hub.db.execute(
-                "UPDATE backends SET slug = ?, title = ?, enabled = ?, config_json = ?, "
-                "secrets_blob = ?, updated_at = ? WHERE id = ?",
-                (new_slug, title, int(enabled), json.dumps(config), blob, utcnow(), row["id"]),
-            )
-            if slug != new_slug:
-                await hub.mounts.unmount(slug)
+        _save_backend(hub, slug=new_slug, plugin_id=plugin.id, title=title, enabled=enabled,
+                      config=config, secrets=secret, row=row)
+        if row is not None and slug != new_slug:
+            await hub.mounts.unmount(slug)
 
         error = await hub.remount(new_slug)
         if error:
@@ -321,8 +329,88 @@ def build(hub: Any) -> list[Route]:
         response = render(request, "account.html", error=None, done=True)
         return response
 
+    # ── registry ──────────────────────────────────────────────────────────
+
+    async def registry_search(request: Request) -> Response:
+        if not require_user(request):
+            return redirect_to_login(request)
+        query = request.query_params.get("q", "").strip()
+        results, error = [], None
+        if query:
+            try:
+                results = await mcp_registry.search(query, limit=25)
+            except mcp_registry.RegistryError as exc:
+                error = str(exc)
+        return render(request, "registry.html", query=query, results=results, error=error)
+
+    async def registry_add(request: Request) -> Response:
+        if not require_user(request):
+            return redirect_to_login(request)
+        name = request.query_params.get("name", "") or (
+            str((await request.form()).get("registry_name", "")) if request.method == "POST" else ""
+        )
+        try:
+            server = await mcp_registry.get(name)
+        except mcp_registry.RegistryError as exc:
+            return render(request, "error.html", message=str(exc), status_code=502)
+        if server is None:
+            return render(request, "error.html", message=f"{name!r} is not in the registry.", status_code=404)
+
+        if request.method == "GET":
+            return render(request, "registry_add.html", server=server, errors=[],
+                          slug=server.slug_hint, title=server.title, values={})
+
+        form = await request.form()
+        slug = str(form.get("slug", "")).strip().lower()
+        title = str(form.get("title", "")).strip() or server.title
+        values = {v.name: str(form.get(f"env_{v.name}", "")).strip() for v in server.env}
+
+        errors: list[str] = []
+        if not SLUG_RE.match(slug):
+            errors.append("URL name must be lowercase letters, digits and dashes (2-40 characters).")
+        elif slug in RESERVED_SLUGS:
+            errors.append(f"{slug!r} is reserved - pick another URL name.")
+        elif hub.backend_row(slug) is not None:
+            errors.append(f"A backend with the URL name {slug!r} already exists.")
+        for var in server.env:
+            if var.required and not values.get(var.name):
+                errors.append(f"{var.name} is required by this server.")
+        if errors:
+            return render(request, "registry_add.html", server=server, errors=errors,
+                          slug=slug, title=title, values=values, status_code=400)
+
+        plugin = hub.registry.get("mcp-proxy")
+        if plugin is None:
+            return render(request, "error.html", message="The proxy plugin is not installed.", status_code=500)
+
+        config: dict[str, Any] = {"registry_name": server.name, "timeout": 60, "verify_tls": True}
+        if server.command:
+            config["command"], config["url"] = server.command, ""
+        else:
+            config["command"], config["url"] = "", server.remote_url
+        # Every declared variable lands in the encrypted blob, not just the ones
+        # flagged secret: which of them are sensitive is the server's claim, and
+        # a wrong claim should not put a token in a plaintext column.
+        env_text = "\n".join(f"{k}={v}" for k, v in values.items() if v)
+        secrets = {"env": env_text} if env_text else {}
+
+        instance = BackendInstance(slug=slug, title=title, plugin_id=plugin.id,
+                                   config=config, secrets=secrets)
+        try:
+            config.update(await plugin.on_save(instance) or {})
+        except Exception:  # noqa: BLE001 - the backend is still worth creating
+            log.exception("could not introspect %s while adding it", server.name)
+
+        # Created disabled: the tools come from someone else's code, so they are
+        # reviewed on the settings page before anything is exposed.
+        _save_backend(hub, slug=slug, plugin_id=plugin.id, title=title, enabled=False,
+                      config=config, secrets=secrets)
+        return RedirectResponse(f"/backends/{slug}", status_code=303)
+
     return [
         Route("/", dashboard),
+        Route("/registry", registry_search),
+        Route("/registry/add", registry_add, methods=["GET", "POST"]),
         Route("/login", login, methods=["GET", "POST"]),
         Route("/logout", logout, methods=["GET", "POST"]),
         Route("/account", account, methods=["GET", "POST"]),

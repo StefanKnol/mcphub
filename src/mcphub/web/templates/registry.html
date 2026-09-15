@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Registry — mcphub{% endblock %}
+{% block body %}
+<h1>Add from the MCP registry</h1>
+<p class="sub">Search the official registry. A published server declares how it is run
+and what settings it takes, so the form for it is generated rather than typed.</p>
+
+<form method="get" action="/registry" class="card" style="display:flex;gap:10px;align-items:center">
+  <input type="search" name="q" value="{{ query }}" autofocus
+         placeholder="filesystem, github, postgres, mikrotik&hellip;" style="flex:1">
+  <button class="primary" type="submit">Search</button>
+  <a class="btn" href="/">Cancel</a>
+</form>
+
+{% if error %}<div class="errors">{{ error }}</div>{% endif %}
+
+{% if query and not results and not error %}
+  <div class="card"><p style="margin:0">Nothing in the registry matches <strong>{{ query }}</strong>.</p>
+  <p class="help">You can still add a server by hand from the dashboard if you know its package name.</p></div>
+{% endif %}
+
+{% for s in results %}
+<div class="card">
+  <div style="display:flex;gap:14px;align-items:flex-start">
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+        <strong>{{ s.title }}</strong>
+        {% if s.version %}<span class="pill">v{{ s.version }}</span>{% endif %}
+        {% if s.command %}<span class="pill">launched</span>{% else %}<span class="pill">remote</span>{% endif %}
+        {% if s.env %}<span class="pill">{{ s.env|length }} setting{{ '' if s.env|length == 1 else 's' }}</span>{% endif %}
+      </div>
+      <p class="help" style="margin-top:4px">{{ s.description }}</p>
+      <code class="url">{{ s.command or s.remote_url }}</code>
+      <p class="note" style="margin-top:6px;font-size:12px">
+        {{ s.name }}{% if s.repository %} — <a href="{{ s.repository }}" rel="noreferrer noopener" target="_blank">source</a>{% endif %}
+      </p>
+    </div>
+    <a class="btn" href="/registry/add?name={{ s.name|urlencode }}">Configure</a>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

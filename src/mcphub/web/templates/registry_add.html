@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ server.title }} — mcphub{% endblock %}
+{% block body %}
+<h1>{{ server.title }}</h1>
+<p class="sub">{{ server.description }}</p>
+
+{% if errors %}<div class="errors">
+  {% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+
+<form method="post" action="/registry/add?name={{ server.name|urlencode }}" class="card">
+  <input type="hidden" name="registry_name" value="{{ server.name }}">
+
+  <p class="note" style="margin-top:0">
+    {% if server.command %}Runs as <code>{{ server.command }}</code>, in its own process.
+    {% else %}Connects to <code>{{ server.remote_url }}</code>.{% endif %}
+  </p>
+
+  <div class="row">
+    <div class="field">
+      <label for="title">Display name</label>
+      <input id="title" type="text" name="title" value="{{ title }}" required>
+    </div>
+    <div class="field">
+      <label for="slug">URL name</label>
+      <input id="slug" type="text" name="slug" value="{{ slug }}" pattern="[a-z0-9][a-z0-9-]{0,38}[a-z0-9]" required>
+      <p class="help">The endpoint becomes <code>{{ public_url }}/mcp/<em>this</em></code>.</p>
+    </div>
+  </div>
+
+  {% if server.env %}
+  <h2>Settings this server asks for</h2>
+  <p class="help" style="margin-top:-4px">Declared by the server itself. All of them are
+    encrypted at rest, whether or not it flagged them as secret.</p>
+  {% for v in server.env %}
+  <div class="field">
+    <label for="e-{{ v.name }}">
+      <span class="mono">{{ v.name }}</span>
+      {% if not v.required %}<span class="note" style="font-weight:400">(optional)</span>{% endif %}
+    </label>
+    <input id="e-{{ v.name }}" name="env_{{ v.name }}"
+           type="{% if v.secret %}password{% else %}text{% endif %}"
+           value="{{ values.get(v.name, '') }}"
+           {% if v.secret %}autocomplete="new-password"{% endif %}
+           {% if v.required %}required{% endif %}>
+    {% if v.description %}<p class="help">{{ v.description }}</p>{% endif %}
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="help">This server declares no settings.</p>
+  {% endif %}
+
+  <p class="note">It will be added <strong>disabled</strong>. You will land on its settings
+    page to review the tools it offers and choose which to expose before it goes live.</p>
+
+  <div class="actions">
+    <button class="primary" type="submit">Add</button>
+    <a class="btn" href="/registry?q={{ server.title|urlencode }}">Back</a>
+  </div>
+</form>
+{% endblock %}

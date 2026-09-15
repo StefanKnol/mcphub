@@ -37,6 +37,14 @@ connector so their tools stay in separate lists.</p>
 {% endfor %}
 
 <h2>Add a backend</h2>
+<div class="card" style="display:flex;gap:12px;align-items:center">
+  <div style="flex:1">
+    <strong>Browse the MCP registry</strong>
+    <p class="help" style="margin-top:3px">Search published servers. The command and its
+      settings form are generated from what the server declares.</p>
+  </div>
+  <a class="btn primary" href="/registry">Search</a>
+</div>
 <div class="card">
   {% for p in plugins %}
   <div style="padding:10px 0;{% if not loop.last %}border-bottom:1px solid var(--line){% endif %}">

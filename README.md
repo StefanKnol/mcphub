@@ -210,6 +210,20 @@ upstream is down — its tools then report the failure themselves.
 > Once an upstream is wrapped, firewall its own port to the hub. Otherwise the
 > authentication is decorative: the original open port is still there.
 
+## Adding servers from the registry
+
+The dashboard can search the
+[official MCP registry](https://registry.modelcontextprotocol.io). A published
+server ships a `server.json` declaring how it runs and what it needs, so both
+the command line and a correctly typed settings form are generated rather than
+typed — a value the server marked secret gets a password field, and everything
+it declares is encrypted at rest whether or not it was flagged.
+
+Search, pick, fill in the settings, and it is added **disabled**; you land on
+its settings page to review its tools and choose which to expose.
+
+Servers not in the registry are still added by hand, with a command or a URL.
+
 ## Writing a plugin
 
 A plugin is any object with `id`, `name`, `description`, `fields`, `build()`

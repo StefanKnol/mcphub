@@ -28,15 +28,23 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px; margin-bottom:14px; }
   label { display:block; font-weight:600; font-size:13px; margin-bottom:5px; }
   .help { color:var(--muted); font-size:13px; margin:5px 0 0; }
-  textarea {
+  /* An attribute selector does not match a defaulted type: `input[type=text]`
+     skips `<input name="username">` entirely, leaving it unstyled beside the
+     password field below it. Match the types we use and the absent case. */
+  input:not([type]), input[type=text], input[type=password], input[type=number],
+  input[type=search], input[type=email], input[type=url], textarea {
     width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
-    background:var(--bg); color:var(--ink); font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-    font-size:13px; resize:vertical; }
-  textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; }
-  input[type=text],input[type=password],input[type=number] {
-    width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
-    background:var(--bg); color:var(--ink); font:inherit; }
-  input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+    background:var(--bg); color:var(--ink); font:inherit; appearance:none; }
+  textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; resize:vertical; }
+  input::placeholder, textarea::placeholder { color:var(--muted); opacity:.8; }
+  input:focus, textarea:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  input:disabled, textarea:disabled { opacity:.6; cursor:not-allowed; }
+  input[type=search]::-webkit-search-decoration,
+  input[type=search]::-webkit-search-cancel-button { appearance:none; }
+  input[type=checkbox] { width:auto; accent-color:var(--accent); }
+  /* :user-invalid, not :invalid — the latter matches an empty required field
+     on page load, so every form opens covered in red before anyone types. */
+  input:user-invalid, textarea:user-invalid { border-color:var(--bad); }
   .field { margin-bottom:16px; }
   .row { display:flex; gap:14px; flex-wrap:wrap; }
   .row > .field { flex:1 1 220px; }
@@ -63,8 +71,7 @@
   .result.ok { color:var(--ok); } .result.bad { color:var(--bad); }
   .toolbar { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
   button.tiny { padding:3px 9px; font-size:12px; font-weight:500; }
-  .filter { flex:1 1 160px; padding:5px 9px; border:1px solid var(--line); border-radius:7px;
-            background:var(--bg); color:var(--ink); font:inherit; font-size:13px; }
+  .filter { flex:1 1 160px; padding:5px 9px; font-size:13px; }
   .picker { max-height:340px; overflow-y:auto; border:1px solid var(--line);
             border-radius:8px; padding:6px 10px; background:var(--bg); }
   .pick { display:flex; gap:8px; align-items:flex-start; padding:3px 0; }
