@@ -27,6 +27,7 @@ connector so their tools stay in separate lists.</p>
       <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
         <strong>{{ b.title }}</strong>
         <span class="pill">{{ b.plugin_name }}</span>
+        {% if b.version %}<span class="pill" title="{{ b.upstream_name }} {{ b.version }}, as it reported itself when last read">v{{ b.version }}</span>{% endif %}
         {% if not b.enabled %}<span class="pill off">disabled</span>
         {% elif b.mounted %}<span class="pill on">live</span>
         {% else %}<span class="pill off">not mounted</span>{% endif %}
@@ -34,7 +35,9 @@ connector so their tools stay in separate lists.</p>
       {% if b.enabled %}<code class="url">{{ b.url }}</code>{% endif %}
       <div class="actions">
         {% if can_manage %}<a class="btn" href="/backends/{{ b.slug }}">Settings</a>{% endif %}
-        <button type="button" class="test" data-slug="{{ b.slug }}">Test connection</button>
+        <button type="button" class="test" data-slug="{{ b.slug }}">Test</button>
+        {% if can_manage %}<button type="button" class="refresh" data-slug="{{ b.slug }}"
+          title="Relaunch the server and re-read the tools it offers. A launched server resolves its package again on start, so this is what picks up a new release.">Update</button>{% endif %}
         <span class="result" id="r-{{ b.slug }}"></span>
         {% if can_manage %}<form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
               data-confirm-title="Delete {{ b.title }}?"
@@ -77,25 +80,31 @@ connector so their tools stay in separate lists.</p>
 {% endif %}
 
 <script>
-document.querySelectorAll("button.test").forEach(function (btn) {
-  btn.addEventListener("click", async function () {
-    var slug = btn.dataset.slug;
-    var out = document.getElementById("r-" + slug);
-    btn.disabled = true;
-    out.className = "result";
-    out.textContent = "Testing\u2026";
-    try {
-      var res = await fetch("/backends/" + encodeURIComponent(slug) + "/test", { method: "POST" });
-      var data = await res.json();
-      out.className = "result " + (data.ok ? "ok" : "bad");
-      out.textContent = data.detail;
-    } catch (err) {
-      out.className = "result bad";
-      out.textContent = "Test failed: " + err;
-    } finally {
-      btn.disabled = false;
-    }
+function wire(selector, path, busy, failed) {
+  document.querySelectorAll(selector).forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var slug = btn.dataset.slug;
+      var out = document.getElementById("r-" + slug);
+      btn.disabled = true;
+      out.className = "result";
+      out.textContent = busy;
+      try {
+        var res = await fetch("/backends/" + encodeURIComponent(slug) + path, { method: "POST" });
+        var data = await res.json();
+        out.className = "result " + (data.ok ? "ok" : "bad");
+        out.textContent = data.detail;
+      } catch (err) {
+        out.className = "result bad";
+        out.textContent = failed + ": " + err;
+      } finally {
+        btn.disabled = false;
+      }
+    });
   });
-});
+}
+wire("button.test", "/test", "Testing\u2026", "Test failed");
+// Relaunching can take a while: an unpinned package is resolved again, and a
+// new release has to be downloaded before the server will start.
+wire("button.refresh", "/refresh", "Relaunching and re-reading\u2026", "Update failed");
 </script>
 {% endblock %}

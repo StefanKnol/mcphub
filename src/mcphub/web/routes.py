@@ -47,6 +47,13 @@ def _initials(title: str) -> str:
     return (words[0][0] + words[1][0]).upper()
 
 
+def _config_value(row: Any, key: str) -> str:
+    try:
+        return str(json.loads(row["config_json"]).get(key) or "")
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return ""
+
+
 def _backend_icon(row: Any) -> str | None:
     """A logo for the card, from the registry entry this backend came from.
 
@@ -240,6 +247,8 @@ def build(hub: Any) -> list[Route]:
                 "updated_at": row["updated_at"],
                 "icon": _backend_icon(row),
                 "initials": _initials(row["title"]),
+                "version": _config_value(row, "upstream_version"),
+                "upstream_name": _config_value(row, "upstream_name"),
             }
             for row in hub.backend_rows()
             if visible is None or row["slug"] in visible
@@ -406,6 +415,86 @@ def build(hub: Any) -> list[Route]:
             return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."})
         result = await plugin.check(hub.instance_from_row(row))
         return JSONResponse({"ok": result.ok, "detail": result.detail})
+
+    async def backend_refresh(request: Request) -> Response:
+        """Re-launch the backend and re-read what it offers.
+
+        This is what "update" means for a launched server: `uvx` and `npx`
+        resolve the package again each time they start, so remounting is what
+        picks up a new release. The cached tool list is re-read at the same
+        time, because otherwise a server can gain tools and this hub goes on
+        serving the old list indefinitely.
+        """
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        slug = request.path_params["slug"]
+        if not may_manage_backends(user):
+            return JSONResponse({"ok": False, "detail": "This account cannot configure backends."},
+                                status_code=403)
+
+        row = hub.backend_row(slug)
+        if row is None:
+            return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
+        plugin = hub.registry.get(row["plugin_id"])
+        if plugin is None:
+            return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."},
+                                status_code=400)
+
+        before = hub.instance_from_row(row)
+        was = getattr(plugin, "tool_names", lambda _i: set())(before)
+        old_version = before.config.get("upstream_version") or ""
+
+        try:
+            discovered = await plugin.on_save(before) or {}
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            log.exception("refresh failed for backend %s", slug)
+            return JSONResponse({"ok": False, "detail": f"{type(exc).__name__}: {exc}"}, status_code=502)
+        if not discovered:
+            return JSONResponse({"ok": False,
+                                 "detail": "Could not reach the server, so nothing was changed."},
+                                status_code=502)
+
+        config = {**before.config, **discovered}
+        _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
+                      enabled=bool(row["enabled"]), config=config, secrets=before.secrets, row=row)
+
+        after = hub.instance_from_row(hub.backend_row(slug))
+        now = getattr(plugin, "tool_names", lambda _i: set())(after)
+        new_version = config.get("upstream_version") or ""
+
+        error = await hub.remount(slug)
+        if error:
+            return JSONResponse({"ok": False, "detail": f"Refreshed, but could not restart: {error}"},
+                                status_code=500)
+
+        added, removed = sorted(now - was), sorted(was - now)
+        parts = []
+        if new_version and new_version != old_version:
+            parts.append(f"updated {old_version or '?'} -> {new_version}")
+        elif new_version:
+            parts.append(f"version {new_version}, unchanged")
+        if added:
+            parts.append(f"{len(added)} new tool(s): {', '.join(added[:4])}"
+                         + ("..." if len(added) > 4 else ""))
+        if removed:
+            parts.append(f"{len(removed)} tool(s) gone: {', '.join(removed[:4])}"
+                         + ("..." if len(removed) > 4 else ""))
+        if not parts:
+            parts.append(f"nothing changed ({len(now)} tools)")
+
+        # Tools the upstream no longer has would otherwise sit in the allowlist
+        # forever, and reappear if it ever brings them back.
+        if removed and isinstance(config.get("tools"), list):
+            kept = [t for t in config["tools"] if t in now]
+            if kept != config["tools"]:
+                config["tools"] = kept
+                _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
+                              enabled=bool(row["enabled"]), config=config,
+                              secrets=before.secrets, row=hub.backend_row(slug))
+                await hub.remount(slug)
+
+        return JSONResponse({"ok": True, "detail": "; ".join(parts)})
 
     async def backend_delete(request: Request) -> Response:
         user = require_user(request)
@@ -660,6 +749,7 @@ def build(hub: Any) -> list[Route]:
         Route("/backends/new", backend_form, methods=["GET", "POST"]),
         Route("/backends/{slug}", backend_form, methods=["GET", "POST"]),
         Route("/backends/{slug}/test", backend_test, methods=["POST"]),
+        Route("/backends/{slug}/refresh", backend_refresh, methods=["POST"]),
         Route("/backends/{slug}/delete", backend_delete, methods=["POST"]),
     ]
 

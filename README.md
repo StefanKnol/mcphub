@@ -103,6 +103,39 @@ about ownership. Pass `--user` to skip it and manage the ownership yourself.
 Then point a proxy host at it with a real certificate. The first-run admin
 password is printed once, in the container log.
 
+### Updating
+
+Three separate things update, and they are not the same thing:
+
+**The hub itself**, including the proxy plugin, updates with the image:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+**A launched server's code.** `uvx` and `npx` resolve their package again each
+time they start, so restarting the backend is what picks up a new release —
+press **Update** on its card. That relaunches it and re-reads what it offers,
+reporting what actually changed:
+
+```
+updated 1.29.0 -> 1.30.0; 1 new tool(s): convert_time
+```
+
+Pin a version in the command when you would rather updates be deliberate:
+
+```
+uvx mikrotik-mcp==0.1.0
+npx -y some-server@1.4.2
+```
+
+**The tool list this hub serves.** Cached when the backend is saved, so that an
+endpoint still mounts when its upstream is down. **Update** re-reads it. Until
+you do, a server that gained tools keeps being advertised with the old list —
+so if an upstream released something and you cannot see it, that button is why.
+Tools the upstream no longer has are dropped from the allowlist at the same
+time, rather than lingering and quietly reappearing if it ever brings them back.
+
 ### Accounts
 
 The first run creates one administrator. Further accounts are added under

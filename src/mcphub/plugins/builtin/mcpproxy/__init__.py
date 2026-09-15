@@ -46,6 +46,8 @@ ENV_PREFIX = "env_"
 """Declared variables are stored one per key, so each can be its own field."""
 
 CONNECTION_KEY = "connection"
+VERSION_KEY = "upstream_version"
+NAME_KEY = "upstream_name"
 
 
 def _parse_env(raw: str) -> dict[str, str]:
@@ -326,6 +328,10 @@ class McpProxyPlugin(PluginDefaults):
         finally:
             await upstream.close()
 
+    def tool_names(self, instance: BackendInstance) -> set[str]:
+        """What this backend currently believes the upstream offers."""
+        return {t.name for t in _catalog(instance)}
+
     async def options(self, instance: BackendInstance, key: str) -> Sequence[Option]:
         if key != ALLOW_KEY:
             return ()
@@ -357,6 +363,10 @@ class McpProxyPlugin(PluginDefaults):
         finally:
             await upstream.close()
         return {
+            # Recorded so the dashboard can show what is actually running, and
+            # so a refresh can say what changed rather than just "done".
+            NAME_KEY: info.get("name") or "",
+            VERSION_KEY: info.get("version") or "",
             CATALOG_KEY: json.dumps([t.model_dump(by_alias=True, exclude_none=True) for t in tools]),
             RESOURCE_CATALOG_KEY: json.dumps(
                 [r.model_dump(by_alias=True, exclude_none=True) for r in resources]
