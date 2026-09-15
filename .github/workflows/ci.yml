@@ -139,11 +139,16 @@ jobs:
             if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
               echo "healthz OK"
 
-              curl -fsS http://127.0.0.1:8080/.well-known/oauth-authorization-server \
-                | grep -q '"issuer"' && echo "oauth metadata OK"
+              curl -fsS http://127.0.0.1:8080/.well-known/oauth-authorization-server -o /tmp/meta.json
+              grep -q '"issuer"' /tmp/meta.json && echo "oauth metadata OK"
 
-              docker logs smoke 2>&1 | grep -q "First run: created the 'admin' account" \
-                && echo "admin bootstrap OK" || { echo "admin bootstrap missing"; exit 1; }
+              # Captured to a file, not piped into grep. Under `set -o pipefail`,
+              # `grep -q` exits on its first match and `docker logs` takes a
+              # SIGPIPE, failing the pipeline — a race that only shows up once
+              # there is enough log output to still be writing.
+              docker logs smoke > /tmp/smoke.log 2>&1
+              grep -q "First run: created the 'admin' account" /tmp/smoke.log \
+                && echo "admin bootstrap OK" || { echo "admin bootstrap missing"; cat /tmp/smoke.log; exit 1; }
 
               # Privileges were actually dropped. Not `docker exec id -u`:
               # exec starts a new process as the image's configured user (root
