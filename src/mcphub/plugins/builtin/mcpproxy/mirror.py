@@ -20,7 +20,10 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.prompts import Prompt
+from mcp.server.mcpserver.prompts.base import PromptArgument
 from mcp.server.mcpserver.resources import FunctionResource
+from mcp.types import Prompt as UpstreamPrompt
 from mcp.types import Resource as UpstreamResource
 from mcp.types import Tool as UpstreamTool
 from mcp.types import ToolAnnotations
@@ -232,5 +235,51 @@ def mirror_resource(mcp: MCPServer, upstream: Upstream, resource: UpstreamResour
         ))
     except Exception:  # noqa: BLE001 - one bad resource must not stop the rest
         log.exception("could not mirror resource %s", uri)
+        return False
+    return True
+
+
+def mirror_prompt(mcp: MCPServer, upstream: Upstream, prompt: UpstreamPrompt) -> bool:
+    """Re-expose one upstream prompt, rendered on demand.
+
+    Arguments are declared from the upstream's own list rather than derived
+    from a Python signature, so a prompt keeps the names, descriptions and
+    required flags it was published with.
+    """
+    name = prompt.name
+
+    async def render(**kwargs: Any) -> Any:
+        supplied = {k: str(v) for k, v in kwargs.items() if v is not None}
+        try:
+            result = await upstream.get_prompt(name, supplied)
+        except UpstreamError as exc:
+            raise ValueError(f"{name}: {exc}") from exc
+        # Dumped to dicts on purpose. The renderer keeps its own `Message`
+        # type or a dict, and anything else falls through to a branch that
+        # JSON-encodes the whole thing into one message body — so returning
+        # the upstream's `PromptMessage` objects directly produces a prompt
+        # whose content is a printed dump of itself.
+        return [
+            m.model_dump(by_alias=True, exclude_none=True)
+            for m in (getattr(result, "messages", None) or [])
+        ]
+
+    try:
+        mcp.add_prompt(Prompt(
+            name=name,
+            title=prompt.title,
+            description=prompt.description,
+            arguments=[
+                PromptArgument(
+                    name=a.name,
+                    description=a.description,
+                    required=bool(a.required),
+                )
+                for a in (prompt.arguments or [])
+            ],
+            fn=render,
+        ))
+    except Exception:  # noqa: BLE001 - one bad prompt must not stop the rest
+        log.exception("could not mirror prompt %s", name)
         return False
     return True

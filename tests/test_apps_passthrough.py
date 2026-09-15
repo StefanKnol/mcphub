@@ -95,3 +95,84 @@ async def test_a_tool_without_apps_metadata_is_unaffected():
     mirror_tool(mcp, FakeUpstream(), UpstreamTool.model_validate(
         {"name": "plain", "description": "d", "inputSchema": {"type": "object", "properties": {}}}))
     assert (await mcp.list_tools())[0].meta is None
+
+
+# ── prompts ───────────────────────────────────────────────────────────────
+
+from mcp.types import Prompt as UpstreamPrompt  # noqa: E402
+from mcp.types import PromptMessage, TextContent  # noqa: E402
+
+from mcphub.plugins.builtin.mcpproxy.mirror import mirror_prompt  # noqa: E402
+
+UPSTREAM_PROMPT = {
+    "name": "diagnose",
+    "description": "Walk through a diagnosis.",
+    "arguments": [
+        {"name": "symptom", "description": "What is wrong", "required": True},
+        {"name": "since", "description": "Since when", "required": False},
+    ],
+}
+
+
+class PromptUpstream:
+    def __init__(self):
+        self.calls = []
+
+    async def get_prompt(self, name, arguments):
+        self.calls.append((name, arguments))
+        return type("R", (), {"messages": [
+            PromptMessage(role="user", content=TextContent(type="text", text=f"symptom={arguments.get('symptom')}")),
+            PromptMessage(role="assistant", content=TextContent(type="text", text="understood")),
+        ]})()
+
+
+@pytest.fixture
+def prompt_server():
+    mcp, up = MCPServer("t"), PromptUpstream()
+    assert mirror_prompt(mcp, up, UpstreamPrompt.model_validate(UPSTREAM_PROMPT))
+    return mcp, up
+
+
+async def test_prompt_arguments_keep_their_declaration(prompt_server):
+    mcp, _ = prompt_server
+    prompt = (await mcp.list_prompts())[0]
+    by_name = {a.name: a for a in prompt.arguments}
+    assert by_name["symptom"].required is True
+    assert by_name["since"].required is False
+    assert by_name["symptom"].description == "What is wrong"
+
+
+async def test_prompt_messages_pass_through_as_messages(prompt_server):
+    """Not as a JSON dump of themselves.
+
+    The renderer keeps its own Message type or a dict; anything else falls
+    through to a branch that encodes the whole result into one message body.
+    """
+    mcp, _ = prompt_server
+    result = await mcp.get_prompt("diagnose", {"symptom": "no dhcp"})
+    assert len(result.messages) == 2
+    first = result.messages[0]
+    content = first["content"] if isinstance(first, dict) else first.content
+    text = content["text"] if isinstance(content, dict) else content.text
+    assert text == "symptom=no dhcp"
+    assert "role" not in text, "the message was serialised into its own body"
+
+
+async def test_prompt_roles_survive(prompt_server):
+    mcp, _ = prompt_server
+    result = await mcp.get_prompt("diagnose", {"symptom": "x"})
+    roles = [m["role"] if isinstance(m, dict) else m.role for m in result.messages]
+    assert roles == ["user", "assistant"]
+
+
+async def test_missing_required_argument_is_refused(prompt_server):
+    mcp, up = prompt_server
+    with pytest.raises(Exception, match="symptom"):
+        await mcp.get_prompt("diagnose", {})
+    assert up.calls == [], "the upstream should not be asked with arguments it requires"
+
+
+async def test_optional_arguments_are_omitted_not_nulled(prompt_server):
+    mcp, up = prompt_server
+    await mcp.get_prompt("diagnose", {"symptom": "x"})
+    assert up.calls[0][1] == {"symptom": "x"}

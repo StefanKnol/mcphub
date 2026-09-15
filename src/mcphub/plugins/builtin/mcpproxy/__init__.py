@@ -23,17 +23,19 @@ from collections.abc import Sequence
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import Prompt as UpstreamPrompt
 from mcp.types import Resource as UpstreamResource
 from mcp.types import Tool as UpstreamTool
 
 from ...base import BackendInstance, CheckResult, ConfigField, Option, PluginDefaults
-from .mirror import mirror_resource, mirror_tool
+from .mirror import mirror_prompt, mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
 
 log = logging.getLogger(__name__)
 
 CATALOG_KEY = "tool_catalog"
 RESOURCE_CATALOG_KEY = "resource_catalog"
+PROMPT_CATALOG_KEY = "prompt_catalog"
 ALLOW_KEY = "tools"
 REGISTRY_ENV_KEY = "registry_env"
 """Cached declaration of the variables an upstream asks for, from its registry
@@ -128,6 +130,15 @@ def _resource_catalog(instance: BackendInstance) -> list[UpstreamResource]:
         return [UpstreamResource.model_validate(r) for r in json.loads(raw)]
     except Exception:  # noqa: BLE001 - a stale cache must not break mounting
         log.warning("backend %s: resource catalogue could not be read", instance.slug)
+        return []
+
+
+def _prompt_catalog(instance: BackendInstance) -> list[UpstreamPrompt]:
+    raw = instance.config.get(PROMPT_CATALOG_KEY) or "[]"
+    try:
+        return [UpstreamPrompt.model_validate(r) for r in json.loads(raw)]
+    except Exception:  # noqa: BLE001 - a stale cache must not break mounting
+        log.warning("backend %s: prompt catalogue could not be read", instance.slug)
         return []
 
 
@@ -283,6 +294,10 @@ class McpProxyPlugin(PluginDefaults):
         if resources:
             log.info("backend %s proxies %d upstream resources", instance.slug, resources)
 
+        prompts = sum(1 for p in _prompt_catalog(instance) if mirror_prompt(mcp, upstream, p))
+        if prompts:
+            log.info("backend %s proxies %d upstream prompts", instance.slug, prompts)
+
         if not catalog:
             log.warning(
                 "backend %s has no cached tool catalogue; open its settings and save "
@@ -333,6 +348,7 @@ class McpProxyPlugin(PluginDefaults):
         try:
             tools = await upstream.list_tools()
             resources = await upstream.list_resources()
+            prompts = await upstream.list_prompts()
             info = await upstream.server_info()
         except Exception:  # noqa: BLE001 - saving must succeed even if upstream is down
             log.info("backend %s: upstream unreachable at save, keeping the previous catalogue",
@@ -344,6 +360,9 @@ class McpProxyPlugin(PluginDefaults):
             CATALOG_KEY: json.dumps([t.model_dump(by_alias=True, exclude_none=True) for t in tools]),
             RESOURCE_CATALOG_KEY: json.dumps(
                 [r.model_dump(by_alias=True, exclude_none=True) for r in resources]
+            ),
+            PROMPT_CATALOG_KEY: json.dumps(
+                [p.model_dump(by_alias=True, exclude_none=True) for p in prompts]
             ),
             "upstream_instructions": info.get("instructions") or "",
         }

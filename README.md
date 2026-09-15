@@ -322,9 +322,11 @@ through the hop: the `ui://` resource its tool points at is exposed and read
 through on demand, with its `text/html;profile=mcp-app` type and `_meta.ui`
 sandbox policy intact.
 
+Prompts are proxied too, keeping the names, descriptions and required flags
+they were published with.
+
 Known limits:
 
-- **Prompts are not proxied.** A server offering prompts keeps them to itself.
 - Non-text tool results (images, embedded resources) are described rather than
   passed through.
 - Schema synthesis is exact for flat object schemas. A deeply nested upstream
