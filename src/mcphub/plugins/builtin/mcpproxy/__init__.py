@@ -33,6 +33,15 @@ log = logging.getLogger(__name__)
 
 CATALOG_KEY = "tool_catalog"
 ALLOW_KEY = "tools"
+REGISTRY_ENV_KEY = "registry_env"
+"""Cached declaration of the variables an upstream asks for, from its registry
+entry. Kept so the settings form can name them offline, rather than degrading
+to a freeform blob once the backend exists."""
+
+ENV_PREFIX = "env_"
+"""Declared variables are stored one per key, so each can be its own field."""
+
+CONNECTION_KEY = "connection"
 
 
 def _parse_env(raw: str) -> dict[str, str]:
@@ -47,16 +56,54 @@ def _parse_env(raw: str) -> dict[str, str]:
     return env
 
 
+def _collect_env(instance: BackendInstance) -> dict[str, str]:
+    """Every environment variable for the launched server.
+
+    Two sources, because both exist: variables the upstream declared are stored
+    one per key so the form can type them, and the freeform textarea covers
+    anything it did not declare. Older backends only have the textarea.
+    """
+    env = _parse_env(str(instance.get("env", "") or ""))
+    for source in (instance.config, instance.secrets):
+        for key, value in source.items():
+            if key.startswith(ENV_PREFIX) and value not in (None, ""):
+                env[key[len(ENV_PREFIX):]] = str(value)
+    return env
+
+
+def _declared_env(instance: BackendInstance) -> list[dict[str, Any]]:
+    raw = instance.config.get(REGISTRY_ENV_KEY)
+    if isinstance(raw, list):
+        return [v for v in raw if isinstance(v, dict) and v.get("name")]
+    if isinstance(raw, str) and raw:
+        try:
+            return [v for v in json.loads(raw) if v.get("name")]
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return []
+    return []
+
+
 def _upstream(instance: BackendInstance) -> Upstream:
     headers: dict[str, str] = {}
     header_name = str(instance.get("auth_header", "") or "").strip()
     header_value = str(instance.get("auth_value", "") or "").strip()
     if header_name and header_value:
         headers[header_name] = header_value
+    command = str(instance.get("command", "") or "").strip()
+    url = str(instance.get("url", "") or "").strip()
+    # Whichever the Connection field says wins. Without this, switching a
+    # backend from a launched server to a URL would silently keep launching,
+    # because a non-empty command always selects stdio.
+    connection = str(instance.get(CONNECTION_KEY, "") or "") or ("launch" if command else "url")
+    if connection == "url":
+        command = ""
+    else:
+        url = ""
+
     return Upstream(UpstreamConfig(
-        url=str(instance.get("url", "") or "").strip(),
-        command=str(instance.get("command", "") or "").strip(),
-        env=_parse_env(str(instance.get("env", "") or "")),
+        url=url,
+        command=command,
+        env=_collect_env(instance),
         headers=headers,
         timeout=float(instance.get("timeout", 30) or 30),
         verify_tls=bool(instance.get("verify_tls", True)),
@@ -92,33 +139,41 @@ class McpProxyPlugin(PluginDefaults):
 
     review_before_enable = True
 
+    # The generic form, for a backend added by hand. A backend that came from
+    # the registry gets a form shaped by what its server declared — see
+    # `fields_for`, which is what the settings page actually renders.
     fields = (
         ConfigField(
-            "command", "Command", required=False,
+            CONNECTION_KEY, "Connection", type="select", required=False, default="launch",
+            choices=(("launch", "Launch the server here"), ("url", "Connect to a running server")),
+            help="Whether the hub starts the server itself or talks to one that is already running.",
+        ),
+        ConfigField(
+            "command", "Command", required=False, show_if=(CONNECTION_KEY, "launch"),
             placeholder="npx -y @modelcontextprotocol/server-filesystem /data",
             help=(
-                "Have the hub launch the server itself. Use this for anything on npm "
-                "(`npx -y <package>`) or PyPI (`uvx <package>`) — no registry of our own "
-                "and nothing to install by hand. The server runs in its own process, so "
-                "it cannot read credentials stored for other backends. "
-                "Leave blank to connect to a server that is already running, below."
+                "Anything on npm (`npx -y <package>`) or PyPI (`uvx <package>`) — no registry "
+                "of our own and nothing to install by hand. The server runs in its own process, "
+                "so it cannot read credentials stored for other backends."
             ),
         ),
         ConfigField(
             "env", "Environment", type="textarea", secret=True, required=False,
-            placeholder="GITHUB_TOKEN=ghp_...\nBRAVE_API_KEY=...",
-            help=(
-                "KEY=VALUE per line, passed to the launched server. Most published servers "
-                "take their API key this way. Encrypted at rest and never shown again."
-            ),
+            show_if=(CONNECTION_KEY, "launch"),
+            placeholder="SOME_TOKEN=...\nANOTHER_SETTING=...",
+            help="KEY=VALUE per line, passed to the launched server. Encrypted at rest.",
         ),
-        ConfigField("url", "Upstream URL", required=False, placeholder="http://192.168.1.50:8043/mcp",
-                    help="For a server that is already running: its streamable-HTTP MCP endpoint, including the path. Ignored when a command is set."),
-        ConfigField("auth_header", "Auth header name", required=False, placeholder="Authorization",
+        ConfigField("url", "Upstream URL", required=False, show_if=(CONNECTION_KEY, "url"),
+                    placeholder="http://192.168.1.50:8043/mcp",
+                    help="The server's streamable-HTTP MCP endpoint, including the path."),
+        ConfigField("auth_header", "Auth header name", required=False, show_if=(CONNECTION_KEY, "url"),
+                    placeholder="Authorization",
                     help="Leave blank if the upstream needs no credentials."),
         ConfigField("auth_value", "Auth header value", type="password", secret=True, required=False,
-                    placeholder="Bearer ...", help="Sent verbatim as the header's value."),
+                    show_if=(CONNECTION_KEY, "url"), placeholder="Bearer ...",
+                    help="Sent verbatim as the header's value."),
         ConfigField("verify_tls", "Verify TLS certificate", type="bool", default=True, required=False,
+                    show_if=(CONNECTION_KEY, "url"),
                     help="Turn off only for an https upstream with a self-signed certificate."),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),
         ConfigField(
@@ -130,6 +185,61 @@ class McpProxyPlugin(PluginDefaults):
             ),
         ),
     )
+
+    def fields_for(self, instance: BackendInstance | None) -> tuple[ConfigField, ...]:
+        """The generic form, with the upstream's own declared variables spliced in.
+
+        Without this, a backend created from the registry loses everything the
+        registry knew about it the moment it is saved: the typed, described
+        fields collapse back to one freeform blob carrying an example about a
+        different server entirely.
+        """
+        # Reflect how this backend is actually configured, so an existing
+        # backend does not open on the wrong branch of the form.
+        current = ""
+        if instance is not None:
+            current = str(instance.get(CONNECTION_KEY, "") or "")
+            if not current:
+                current = "launch" if str(instance.get("command", "") or "").strip() else "url"
+        base = tuple(
+            ConfigField(**{**f.__dict__, "default": current}) if f.key == CONNECTION_KEY and current else f
+            for f in self.fields
+        )
+
+        declared = _declared_env(instance) if instance else []
+        if not declared:
+            return base
+
+        typed = tuple(
+            ConfigField(
+                f"{ENV_PREFIX}{v['name']}",
+                v["name"],
+                # Everything declared is encrypted, not only what the upstream
+                # flagged secret: which of its variables are sensitive is its
+                # own claim, and a wrong claim should not leave a token in a
+                # plaintext column.
+                type="password" if v.get("isSecret") else "text",
+                secret=True,
+                required=bool(v.get("isRequired")),
+                help=v.get("description", ""),
+                show_if=(CONNECTION_KEY, "launch"),
+            )
+            for v in declared
+        )
+
+        out: list[ConfigField] = []
+        for field in base:
+            if field.key == "env":
+                out.extend(typed)
+                out.append(ConfigField(
+                    "env", "Additional environment", type="textarea", secret=True, required=False,
+                    show_if=(CONNECTION_KEY, "launch"),
+                    placeholder="ANYTHING_ELSE=...",
+                    help="KEY=VALUE per line, for variables this server did not declare.",
+                ))
+            else:
+                out.append(field)
+        return tuple(out)
 
     def build(self, instance: BackendInstance) -> MCPServer:
         upstream = _upstream(instance)

@@ -21,7 +21,7 @@ from starlette.templating import Jinja2Templates
 from ..crypto import hash_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
-from ..plugins.base import BackendInstance, ConfigField
+from ..plugins.base import BackendInstance, ConfigField, choice_pairs
 from .session import current_user, end_session, start_session
 
 log = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def build(hub: Any) -> list[Route]:
 
     async def form_values(plugin: Any, instance: BackendInstance | None) -> list[dict[str, Any]]:
         values = []
-        for f in plugin.fields:
+        for f in plugin.fields_for(instance):
             options: list[Any] = []
             selected: list[str] = []
             if f.secret:
@@ -169,7 +169,7 @@ def build(hub: Any) -> list[Route]:
 
             values.append({
                 "field": f, "value": "" if value is None else value, "has_value": has_value,
-                "options": options, "selected": selected,
+                "options": options, "selected": selected, "choices": choice_pairs(f),
             })
         return values
 
@@ -178,7 +178,7 @@ def build(hub: Any) -> list[Route]:
         secret: dict[str, Any] = dict(existing.secrets) if existing else {}
         errors: list[str] = []
 
-        for f in plugin.fields:
+        for f in plugin.fields_for(existing):
             if f.type == "multiselect":
                 config[f.key] = [str(v) for v in form.getlist(f.key)]
                 continue
@@ -385,14 +385,22 @@ def build(hub: Any) -> list[Route]:
 
         config: dict[str, Any] = {"registry_name": server.name, "timeout": 60, "verify_tls": True}
         if server.command:
-            config["command"], config["url"] = server.command, ""
+            config.update({"command": server.command, "url": "", "connection": "launch"})
         else:
-            config["command"], config["url"] = "", server.remote_url
-        # Every declared variable lands in the encrypted blob, not just the ones
-        # flagged secret: which of them are sensitive is the server's claim, and
-        # a wrong claim should not put a token in a plaintext column.
-        env_text = "\n".join(f"{k}={v}" for k, v in values.items() if v)
-        secrets = {"env": env_text} if env_text else {}
+            config.update({"command": "", "url": server.remote_url, "connection": "url"})
+
+        # Keep the declaration, not just the values. It is what lets the settings
+        # page go on naming these variables and describing them, instead of
+        # collapsing to a freeform blob the moment the backend exists.
+        config["registry_env"] = [
+            {"name": v.name, "description": v.description,
+             "isRequired": v.required, "isSecret": v.secret}
+            for v in server.env
+        ]
+        # Every declared variable is encrypted, not just the ones flagged secret:
+        # which of them are sensitive is the server's claim, and a wrong claim
+        # should not put a token in a plaintext column.
+        secrets = {f"env_{name}": value for name, value in values.items() if value}
 
         instance = BackendInstance(slug=slug, title=title, plugin_id=plugin.id,
                                    config=config, secrets=secrets)

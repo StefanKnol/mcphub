@@ -46,11 +46,30 @@ class ConfigField:
     required: bool = True
     default: Any = None
     help: str = ""
-    choices: Sequence[str] = ()
+    choices: Sequence[str | tuple[str, str]] = ()
+    """Options for a `select`. Either bare values, or (value, label) pairs."""
+
+    show_if: tuple[str, str] | None = None
+    """Only show this field when another field has a given value, e.g.
+    ``show_if=("connection", "launch")``. Keeps a form from presenting settings
+    that cannot apply, which is how a proxy backend ended up showing an auth
+    header next to a command line that would ignore it."""
+
     secret: bool = False
     """Secret values are encrypted at rest and never sent back to the browser."""
 
     placeholder: str = ""
+
+
+def choice_pairs(field: ConfigField) -> list[tuple[str, str]]:
+    """Normalise `choices` to (value, label), so templates need not care."""
+    pairs: list[tuple[str, str]] = []
+    for choice in field.choices:
+        if isinstance(choice, tuple):
+            pairs.append((str(choice[0]), str(choice[1])))
+        else:
+            pairs.append((str(choice), str(choice)))
+    return pairs
 
 
 @dataclass(frozen=True)
@@ -124,9 +143,24 @@ class Plugin(Protocol):
         """
         ...
 
+    def fields_for(self, instance: BackendInstance | None) -> Sequence[ConfigField]:
+        """The settings form for one backend, which need not be the generic one.
+
+        A backend added from the registry knows which variables its server
+        declares, so its form can name them with their own descriptions instead
+        of falling back to a freeform blob and an example about some other
+        server's API key.
+        """
+        ...
+
 
 class PluginDefaults:
     """Mix in to inherit no-op implementations of the optional hooks."""
+
+    fields: Sequence[ConfigField] = ()
+
+    def fields_for(self, instance: BackendInstance | None) -> Sequence[ConfigField]:
+        return self.fields
 
     review_before_enable: bool = False
     """Create new backends of this kind disabled.

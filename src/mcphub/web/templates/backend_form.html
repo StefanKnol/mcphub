@@ -24,8 +24,19 @@
   </div>
 
   {% for item in fields %}
-  <div class="field">
-    {% if item.field.type == "multiselect" %}
+  <div class="field"
+       {% if item.field.show_if %}data-show-if-field="{{ item.field.show_if[0] }}"
+       data-show-if-value="{{ item.field.show_if[1] }}"{% endif %}>
+    {% if item.field.type == "select" %}
+      <label for="f-{{ item.field.key }}">{{ item.field.label }}</label>
+      <div class="select-wrap">
+        <select id="f-{{ item.field.key }}" name="{{ item.field.key }}">
+          {% for value, label in item.choices %}
+          <option value="{{ value }}" {% if item.value|string == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% elif item.field.type == "multiselect" %}
       <label>{{ item.field.label }}</label>
       {% if item.field.help %}<p class="help">{{ item.field.help }}</p>{% endif %}
       {% if item.options %}

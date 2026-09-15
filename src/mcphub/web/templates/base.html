@@ -91,6 +91,17 @@
   dialog.modal p { margin:0; color:var(--muted); font-size:14px; }
   dialog.modal .foot { display:flex; gap:10px; justify-content:flex-end; padding:18px 20px 20px; }
   .field-error { color:var(--bad); font-size:13px; margin:5px 0 0; }
+  /* The platform's own select ignores the theme, so it is restyled and given a
+     drawn arrow rather than the user agent's. */
+  .select-wrap { position:relative; }
+  .select-wrap::after {
+    content:""; position:absolute; right:13px; top:50%; width:8px; height:8px;
+    border-right:2px solid var(--muted); border-bottom:2px solid var(--muted);
+    transform:translateY(-70%) rotate(45deg); pointer-events:none; }
+  select {
+    width:100%; padding:9px 34px 9px 11px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--ink); font:inherit; appearance:none; cursor:pointer; }
+  .field[hidden] { display:none; }
   table { width:100%; border-collapse:collapse; font-size:14px; }
   td,th { text-align:left; padding:7px 10px 7px 0; border-bottom:1px solid var(--line); }
 </style>
@@ -143,6 +154,37 @@
       dialog.showModal();
     });
   });
+})();
+
+// Fields that only apply to one branch of a form are hidden on the others,
+// rather than shown with a note saying they will be ignored.
+(function () {
+  var conditional = document.querySelectorAll("[data-show-if-field]");
+  if (!conditional.length) return;
+
+  function apply() {
+    conditional.forEach(function (field) {
+      var control = document.getElementsByName(field.dataset.showIfField)[0];
+      if (!control) return;
+      var shown = String(control.value) === field.dataset.showIfValue;
+      field.hidden = !shown;
+      // A hidden required field would block submission with a message nobody
+      // can see, so its constraint is lifted while it is out of the way.
+      field.querySelectorAll("input, textarea, select").forEach(function (el) {
+        if (shown) {
+          if (el.dataset.wasRequired) { el.required = true; delete el.dataset.wasRequired; }
+        } else if (el.required) {
+          el.dataset.wasRequired = "1";
+          el.required = false;
+        }
+      });
+    });
+  }
+
+  document.querySelectorAll("select, input[type=checkbox]").forEach(function (el) {
+    el.addEventListener("change", apply);
+  });
+  apply();
 })();
 
 // Native validation bubbles are the browser's own widget and ignore the theme,
