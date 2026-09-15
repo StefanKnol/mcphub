@@ -294,3 +294,53 @@ def _sortable(version: str) -> tuple[Any, ...]:
     for chunk in re.split(r"[.\-+]", version):
         parts.append((0, int(chunk)) if chunk.isdigit() else (1, chunk))
     return tuple(parts)
+
+
+def package_from_command(command: str) -> tuple[str, str]:
+    """The runtime and package identifier a command line launches.
+
+    Used to re-attach a backend to its registry entry when its metadata was
+    lost or never recorded — a hand-written `uvx some-server` can be matched to
+    a published server just as well as one added from the registry.
+
+    Returns ("", "") when the command is not of a shape we can read, which is
+    the honest answer for anything beyond the two runtimes we understand.
+    """
+    parts = command.split()
+    if len(parts) < 2:
+        return "", ""
+    runtime = parts[0].rsplit("/", 1)[-1]
+    if runtime not in {"uvx", "npx"}:
+        return "", ""
+
+    for token in parts[1:]:
+        if token.startswith("-"):
+            continue
+        # Strip a pin: `pkg==1.2.3`, or `pkg@1.2.3` where the at-sign is not
+        # the one that starts a scoped npm name.
+        identifier = token.split("==")[0]
+        at = identifier.rfind("@")
+        if at > 0:
+            identifier = identifier[:at]
+        return runtime, identifier
+    return "", ""
+
+
+async def find_by_package(identifier: str) -> RegistryServer | None:
+    """The one published server that ships this package, if exactly one does.
+
+    Ambiguity is returned as no match rather than a guess: adopting the wrong
+    entry would attach another server's environment variables to this backend.
+    """
+    if not identifier:
+        return None
+    matches = [
+        server for server in await search(identifier, limit=MAX_LIMIT)
+        if server.package and server.package.identifier == identifier
+    ]
+    if len(matches) != 1:
+        if matches:
+            log.info("%r is shipped by %d registry entries; not adopting any",
+                     identifier, len(matches))
+        return None
+    return matches[0]

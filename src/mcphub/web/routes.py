@@ -76,6 +76,70 @@ def _backend_icon(row: Any) -> str | None:
     return None
 
 
+def _split_env_blob(blob: str, declared: list[str]) -> tuple[dict[str, str], str]:
+    """Move declared variables out of the freeform block into their own keys.
+
+    Otherwise a relinked backend shows seven empty typed fields while its
+    actual values sit in a blob the form does not display — working, but
+    reading as though the configuration had been lost.
+    """
+    from ..plugins.builtin.mcpproxy import _parse_env
+
+    values = _parse_env(blob)
+    wanted = {name: values.pop(name) for name in declared if name in values}
+    leftover = "\n".join(f"{k}={v}" for k, v in values.items())
+    return wanted, leftover
+
+
+async def relink_registry(hub: Any, row: Any) -> dict[str, Any] | None:
+    """Re-attach a backend to the registry entry its command launches.
+
+    Two backends need this. One added from the registry before saving the form
+    preserved config, whose metadata a save discarded; and one added by hand,
+    which never had any. Both end up showing a freeform environment box with an
+    example about somebody else's API key, instead of the variables their
+    server actually declares.
+
+    Only ever adds. A command that matches nothing, or matches more than one
+    published server, is left exactly as it is.
+    """
+    try:
+        config = json.loads(row["config_json"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if config.get("registry_name") and config.get("registry_package"):
+        return None
+    command = str(config.get("command") or "").strip()
+    if not command:
+        return None
+
+    _, identifier = mcp_registry.package_from_command(command)
+    try:
+        server = await mcp_registry.find_by_package(identifier)
+    except mcp_registry.RegistryError as exc:
+        log.info("could not look up %r while relinking %s: %s", identifier, row["slug"], exc)
+        return None
+    if server is None or not server.package:
+        return None
+
+    log.info("backend %s relinked to %s", row["slug"], server.name)
+    return {
+        "registry_name": server.name,
+        "registry_package": {
+            "registryType": server.package.registry_type,
+            "identifier": server.package.identifier,
+            "runtime": server.package.runtime,
+            "args": list(server.package.args),
+        },
+        "registry_env": [
+            {"name": v.name, "description": v.description,
+             "isRequired": v.required, "isSecret": v.secret}
+            for v in server.env
+        ],
+        **({"registry_icons": list(server.icons)} if server.icons else {}),
+    }
+
+
 def _resource_slug(resource: str | None) -> str | None:
     """The backend a token is being requested for, from its RFC 8707 resource."""
     if not resource:
@@ -353,6 +417,32 @@ def build(hub: Any) -> list[Route]:
                           message=f"Plugin {plugin_id!r} is not installed.", status_code=404)
 
         instance = hub.instance_from_row(row) if row else None
+
+        # A backend with no registry metadata gets one look-up to find it. The
+        # alternative is a form that asks for a freeform blob forever, for a
+        # server that publishes exactly what it needs.
+        if row is not None and request.method == "GET":
+            recovered = await relink_registry(hub, row)
+            if recovered:
+                config = {**json.loads(row["config_json"]), **recovered}
+                secrets = dict(instance.secrets) if instance else {}
+
+                declared = [v["name"] for v in recovered.get("registry_env") or []]
+                moved, leftover = _split_env_blob(str(secrets.get("env") or ""), declared)
+                for name, value in moved.items():
+                    secrets.setdefault(f"env_{name}", value)
+                if moved:
+                    secrets["env"] = leftover
+                    if not leftover:
+                        secrets.pop("env", None)
+                    log.info("backend %s: moved %d variable(s) into their own fields",
+                             row["slug"], len(moved))
+
+                _save_backend(hub, slug=row["slug"], plugin_id=row["plugin_id"],
+                              title=row["title"], enabled=bool(row["enabled"]),
+                              config=config, secrets=secrets, row=row)
+                row = hub.backend_row(row["slug"])
+                instance = hub.instance_from_row(row)
 
         if request.method == "GET":
             return render(request, "backend_form.html", plugin=plugin, row=row,
