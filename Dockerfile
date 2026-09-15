@@ -29,25 +29,25 @@ LABEL org.opencontainers.image.source="https://github.com/StefanKnol/mcphub" \
       org.opencontainers.image.description="Self-hosted MCP platform: backends as plugins, one OAuth-protected MCP endpoint per backend." \
       org.opencontainers.image.licenses="MIT"
 
-RUN useradd --system --uid 10001 --create-home mcphub
-
-# /data must be created and owned *before* the VOLUME instruction. Declaring
-# the volume first makes any later change to that path part of a layer the
-# volume discards, so the chown would silently not apply and the container
-# would fail to write hub.db as a non-root user.
-RUN mkdir -p /data && chown mcphub:mcphub /data
+# /data must be created before the VOLUME instruction: anything written to that
+# path afterwards lands in a layer the volume discards.
+RUN mkdir -p /data
 VOLUME /data
 
-COPY --from=build --chown=mcphub:mcphub /app /app
+COPY --from=build /app /app
+COPY docker-entrypoint.py /usr/local/bin/docker-entrypoint.py
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MCPHUB_DATA_DIR=/data \
     MCPHUB_HOST=0.0.0.0 \
-    MCPHUB_PORT=8080
+    MCPHUB_PORT=8080 \
+    PUID=99 \
+    PGID=100
 
-USER mcphub
+# Starts as root so the entrypoint can align /data with PUID/PGID, then drops
+# to that user before running anything. Pass `--user` to skip that entirely.
 WORKDIR /app
 EXPOSE 8080
 
@@ -56,4 +56,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import os,urllib.request;p=os.environ.get('MCPHUB_PORT','8080');urllib.request.urlopen('http://127.0.0.1:'+p+'/healthz').read()"
 
-CMD ["python", "-m", "mcphub"]
+ENTRYPOINT ["python", "/usr/local/bin/docker-entrypoint.py"]

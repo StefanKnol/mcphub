@@ -92,6 +92,13 @@ Add a container with the published image and:
 | Port | `8080` → `8080` |
 | Path | `/mnt/user/appdata/mcphub` → `/data` |
 | Variable | `MCPHUB_PUBLIC_URL` = the URL your reverse proxy serves |
+| Variable | `PUID` = `99`, `PGID` = `100` (defaults; Unraid's `nobody:users`) |
+
+The container starts as root only long enough to align `/data` with
+`PUID`/`PGID`, then drops to that user before running anything. Without that
+step a bind mount owned by someone else fails as
+`sqlite3.OperationalError: unable to open database file`, which says nothing
+about ownership. Pass `--user` to skip it and manage the ownership yourself.
 
 Then point a proxy host at it with a real certificate. The first-run admin
 password is printed once, in the container log.

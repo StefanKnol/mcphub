@@ -18,3 +18,7 @@ services:
       # OAuth discovery compares issuer strings exactly, so a mismatch here
       # fails discovery rather than merely degrading it.
       MCPHUB_PUBLIC_URL: "https://mcp.example.com"
+      # The entrypoint chowns /data to this user, then drops to it. 99:100 is
+      # nobody:users, which owns appdata on Unraid.
+      PUID: "99"
+      PGID: "100"
