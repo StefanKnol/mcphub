@@ -112,7 +112,13 @@ Only these are environment variables. Everything else lives in the database.
 | `MCPHUB_PUBLIC_URL` | `http://localhost:8080` | Externally reachable origin. Must be HTTPS in production. |
 | `MCPHUB_DATA_DIR` | `/data` | Holds `hub.db` and `master.key`. |
 | `MCPHUB_HOST` / `MCPHUB_PORT` | `0.0.0.0` / `8080` | Bind address. |
-| `MCPHUB_DEV` | unset | Permits a non-HTTPS public URL. Local development only. |
+| `MCPHUB_ALLOWED_HOSTS` | derived | Extra Host header values to accept, comma-separated. Only needed when the hub answers on a name other than `MCPHUB_PUBLIC_URL`. |
+| `MCPHUB_DEV` | unset | Starlette debug output. Does not relax the HTTPS requirement — OAuth needs an HTTPS issuer, so only `localhost` and `127.0.0.1` may use http. |
+
+The MCP transport enforces DNS-rebinding protection, accepting only Host
+headers matching `MCPHUB_PUBLIC_URL` (plus loopback). Get that variable wrong
+and requests fail with `421 Misdirected Request` *after* a completely
+successful sign-in, which looks like an authentication fault and is not one.
 
 Back up `/data`. Losing `master.key` makes every stored backend credential
 permanently unreadable.

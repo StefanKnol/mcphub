@@ -120,7 +120,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 "=" * 68, password, settings.public_url, "=" * 68,
             )
 
-        hub.mounts = MountManager(app, hub.provider, settings.public_url)
+        hub.mounts = MountManager(app, hub.provider, settings)
         for row in hub.backend_rows(enabled_only=True):
             error = await hub.remount(row["slug"])
             if error:

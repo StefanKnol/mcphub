@@ -24,6 +24,7 @@ from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAut
 from mcp.server.auth.provider import ProviderTokenVerifier
 from mcp.server.auth.routes import build_resource_metadata_url, create_protected_resource_routes
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl, ConfigDict, TypeAdapter
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.routing import Route
@@ -60,10 +61,11 @@ class Mounted:
 class MountManager:
     """Owns the live set of backend endpoints and keeps the router in sync."""
 
-    def __init__(self, app: Any, provider: HubOAuthProvider, public_url: str) -> None:
+    def __init__(self, app: Any, provider: HubOAuthProvider, settings: Any) -> None:
         self._app = app
         self._provider = provider
-        self._public_url = public_url.rstrip("/")
+        self._settings = settings
+        self._public_url = settings.public_url.rstrip("/")
         self._verifier = ProviderTokenVerifier(provider)
         self._mounted: dict[str, Mounted] = {}
 
@@ -82,7 +84,18 @@ class MountManager:
 
         # `streamable_http_path="/"` because the mount prefix already carries
         # the path; the SDK would otherwise serve at /mcp/{slug}/mcp.
-        sub_app = server.streamable_http_app(streamable_http_path="/")
+        #
+        # `transport_security` is not optional in practice: without it the SDK
+        # accepts only a 127.0.0.1 Host header, so behind a reverse proxy every
+        # MCP request is rejected with 421 after OAuth has already succeeded.
+        sub_app = server.streamable_http_app(
+            streamable_http_path="/",
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=self._settings.allowed_hosts,
+                allowed_origins=self._settings.allowed_origins,
+            ),
+        )
 
         # The sub-app's lifespan is the streamable-HTTP session manager, which
         # opens an anyio task group. A task group must be exited by the task
