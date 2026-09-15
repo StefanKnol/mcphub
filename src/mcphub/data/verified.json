@@ -11,10 +11,11 @@
         "MIKROTIK_PASSWORD": "verify",
         "MIKROTIK_TIMEOUT": "2"
       },
-      "status": "unavailable",
-      "toolCount": null,
-      "lastVerified": null,
-      "detail": "not published to the registry yet"
+      "status": "ok",
+      "toolCount": 24,
+      "lastVerified": "2026-09-15",
+      "detail": "mikrotik 0.1.0",
+      "command": "uvx mikrotik-mcp"
     }
   ]
 }
