@@ -154,6 +154,13 @@ jobs:
               [ "$uid" = "99" ] && echo "app runs as uid 99 OK" \
                 || { echo "expected app uid 99, got $uid"; exit 1; }
 
+              # The launcher runtimes are present, since without them a backend
+              # configured with `npx ...` fails only when someone tries to use it.
+              docker exec smoke npx --version >/dev/null 2>&1 && echo "npx available OK" \
+                || { echo "npx missing from the image"; exit 1; }
+              docker exec smoke uvx --version >/dev/null 2>&1 && echo "uvx available OK" \
+                || { echo "uvx missing from the image"; exit 1; }
+
               # And the database landed on the mounted volume, owned by that
               # user — which is the end-to-end proof the chown-then-drop worked.
               sudo test -f /tmp/smoke-data/hub.db \

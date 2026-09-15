@@ -164,8 +164,34 @@ tool. There is deliberately no generic *write* escape hatch.
 
 ## The proxy plugin
 
-Wraps an MCP server you already run. Point it at an endpoint and that server
-inherits the hub's authentication without a line of its own code changing.
+Wraps an MCP server — one you already run, or one the hub launches for you.
+Either way it inherits the hub's authentication without a line of its own code
+changing.
+
+### Installing servers from npm and PyPI
+
+Give the backend a command instead of a URL and the hub runs the server itself:
+
+```
+npx -y @modelcontextprotocol/server-filesystem /data
+uvx mcp-server-time --local-timezone=Europe/Amsterdam
+```
+
+npm and PyPI are the plugin registry, so there is nothing to host and nothing
+to install by hand. The image ships Node and uv for exactly this; downloads are
+cached on the data volume, so a restart does not refetch them. Servers that
+need an API key take one through the **Environment** field (`KEY=VALUE` per
+line), which is encrypted at rest like any other secret.
+
+A launched server runs in **its own process**. It cannot read the credentials
+stored for other backends, cannot reach the OAuth tables, and cannot touch the
+encryption key — none of which is true of a plugin loaded into the hub. That is
+the reason to prefer this route for third-party code, and the reason the hub
+does not install Python plugins from PyPI at runtime.
+
+New proxy backends are created **disabled**. Adding one installs and
+introspects the server but mounts nothing, so you see its tool list and choose
+what to expose before anything attaches to your account.
 
 That is how Unraid is handled: the Unraid Management Agent already speaks MCP
 on `http://<server>:8043/mcp`, so there is nothing to reimplement — it just

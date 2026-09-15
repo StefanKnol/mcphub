@@ -58,6 +58,12 @@
         {% endfor %}
         {% if item.selected %}<p class="help">Keeping {{ item.selected|length }} previously selected tool(s).</p>{% endif %}
       {% endif %}
+    {% elif item.field.type == "textarea" %}
+      <label for="f-{{ item.field.key }}">{{ item.field.label }}{% if not item.field.required %}
+        <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>
+      <textarea id="f-{{ item.field.key }}" name="{{ item.field.key }}" rows="4" spellcheck="false"
+                {% if item.field.placeholder %}placeholder="{{ item.field.placeholder }}"{% endif %}
+      >{% if not item.field.secret %}{{ item.value }}{% endif %}</textarea>
     {% elif item.field.type == "bool" %}
       <div class="checkline">
         <input type="checkbox" id="f-{{ item.field.key }}" name="{{ item.field.key }}"

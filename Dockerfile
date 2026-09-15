@@ -29,6 +29,16 @@ LABEL org.opencontainers.image.source="https://github.com/StefanKnol/mcphub" \
       org.opencontainers.image.description="Self-hosted MCP platform: backends as plugins, one OAuth-protected MCP endpoint per backend." \
       org.opencontainers.image.licenses="MIT"
 
+# Node and uv are here so the hub can launch MCP servers published to npm and
+# PyPI — `npx -y <package>`, `uvx <package>` — rather than needing a plugin
+# registry of its own. Each launched server runs in its own process, so it
+# cannot reach the credentials the hub holds for other backends.
+COPY --from=node:22-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:22-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /usr/local/bin/
+
 # /data must be created before the VOLUME instruction: anything written to that
 # path afterwards lands in a layer the volume discards.
 RUN mkdir -p /data

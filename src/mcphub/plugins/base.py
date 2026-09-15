@@ -19,7 +19,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from mcp.server.mcpserver import MCPServer
 
-FieldType = Literal["text", "password", "number", "bool", "select", "multiselect"]
+FieldType = Literal["text", "password", "number", "bool", "select", "multiselect", "textarea"]
 
 
 @dataclass(frozen=True)
@@ -127,6 +127,14 @@ class Plugin(Protocol):
 
 class PluginDefaults:
     """Mix in to inherit no-op implementations of the optional hooks."""
+
+    review_before_enable: bool = False
+    """Create new backends of this kind disabled.
+
+    Set it where the tool surface comes from somewhere other than this
+    repository. A newly added third-party server should not be able to attach
+    its tools to an account before anyone has looked at what they are.
+    """
 
     async def options(self, instance: BackendInstance, key: str) -> Sequence[Option]:
         return ()

@@ -1,23 +1,40 @@
 """A long-lived client session against an upstream MCP server.
 
+Two transports, one session object:
+
+- **http** talks to a server that is already running somewhere.
+- **stdio** has the hub launch the server itself — `npx -y some-mcp-server`,
+  `uvx some-server`, a binary — which is what makes the npm and PyPI MCP
+  ecosystems installable without a registry of our own. It also means
+  third-party code runs in its own process, where it cannot read the hub's
+  stored credentials.
+
 The transport is an async context manager that owns a task group internally, so
 it has to be entered and exited in the same task. A dedicated worker task holds
 it open; everyone else waits for `_ready` and then uses the session object,
 which is safe to drive concurrently because JSON-RPC ids keep responses apart.
 
 The alternative — a fresh session per tool call — would mean a connect and an
-`initialize` round trip before every single call.
+`initialize` round trip before every single call, and for stdio it would mean
+respawning the whole server each time.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shlex
+import shutil
+import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx2
-from mcp import ClientSession
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Prompt, Resource, Tool
 
@@ -30,10 +47,32 @@ class UpstreamError(RuntimeError):
 
 @dataclass(frozen=True)
 class UpstreamConfig:
-    url: str
+    """How to reach the upstream. Exactly one of `url` or `command` is used."""
+
+    url: str = ""
+    command: str = ""
+    """Full command line, e.g. `npx -y @modelcontextprotocol/server-filesystem /data`."""
+    env: dict[str, str] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     timeout: float = 30.0
     verify_tls: bool = True
+
+    @property
+    def is_stdio(self) -> bool:
+        return bool(self.command.strip())
+
+    @property
+    def label(self) -> str:
+        return self.command.strip() if self.is_stdio else self.url
+
+    def argv(self) -> list[str]:
+        try:
+            parts = shlex.split(self.command)
+        except ValueError as exc:
+            raise UpstreamError(f"Could not parse the command line: {exc}") from exc
+        if not parts:
+            raise UpstreamError("The command line is empty.")
+        return parts
 
 
 class Upstream:
@@ -47,11 +86,28 @@ class Upstream:
         self._stop = asyncio.Event()
         self._failure: BaseException | None = None
         self._lock = asyncio.Lock()
+        self._stderr = _Stderr()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
-    async def _run(self) -> None:
-        try:
+    @asynccontextmanager
+    async def _streams(self) -> AsyncIterator[tuple[Any, Any]]:
+        """Open whichever transport this upstream is configured for."""
+        if self._cfg.is_stdio:
+            argv = self._cfg.argv()
+            if shutil.which(argv[0]) is None:
+                raise UpstreamError(
+                    f"{argv[0]!r} is not installed in this container, so the server "
+                    f"cannot be launched. `npx` needs Node and `uvx` needs uv."
+                )
+            params = StdioServerParameters(
+                command=argv[0],
+                args=argv[1:],
+                env={**_child_env(), **self._cfg.env},
+            )
+            async with stdio_client(params, errlog=self._stderr) as streams:  # type: ignore[arg-type]
+                yield streams[0], streams[1]
+        else:
             client = httpx2.AsyncClient(
                 headers=self._cfg.headers,
                 timeout=self._cfg.timeout,
@@ -59,15 +115,19 @@ class Upstream:
             )
             async with client:
                 async with streamable_http_client(self._cfg.url, http_client=client) as streams:
-                    read, write = streams[0], streams[1]
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        self._session = session
-                        self._ready.set()
-                        await self._stop.wait()
+                    yield streams[0], streams[1]
+
+    async def _run(self) -> None:
+        try:
+            async with self._streams() as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    self._ready.set()
+                    await self._stop.wait()
         except BaseException as exc:  # noqa: BLE001 - re-raised to every waiter
             self._failure = exc
-            log.warning("upstream %s failed: %s", self._cfg.url, exc)
+            log.warning("upstream %s failed: %s", self._cfg.label, exc)
         finally:
             self._session = None
             # Wake anyone still waiting; they check _failure and report it.
@@ -86,10 +146,10 @@ class Upstream:
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=self._cfg.timeout + 5)
         except asyncio.TimeoutError as exc:
-            raise UpstreamError(f"Timed out connecting to {self._cfg.url}") from exc
+            raise UpstreamError(f"Timed out starting or connecting to {self._cfg.label}") from exc
 
         if self._session is None:
-            raise UpstreamError(_explain(self._cfg.url, self._failure))
+            raise UpstreamError(_explain(self._cfg.label, self._failure, self._stderr.tail()))
         return self._session
 
     async def close(self) -> None:
@@ -115,8 +175,8 @@ class Upstream:
             except Exception as exc:  # noqa: BLE001 - transport-level failure
                 await self.close()
                 if attempt == 2:
-                    raise UpstreamError(_explain(self._cfg.url, exc)) from exc
-                log.info("upstream %s dropped, reconnecting (%s)", self._cfg.url, exc)
+                    raise UpstreamError(_explain(self._cfg.label, exc, self._stderr.tail())) from exc
+                log.info("upstream %s dropped, reconnecting (%s)", self._cfg.label, exc)
         raise AssertionError("unreachable")
 
     # ── introspection and forwarding ──────────────────────────────────────
@@ -158,10 +218,104 @@ class Upstream:
         }
 
 
-def _explain(url: str, exc: BaseException | None) -> str:
+def _child_env() -> dict[str, str]:
+    """Environment for a launched server.
+
+    npx and uvx both need a writable HOME and cache. The hub runs as an
+    unprivileged user whose home may not exist, and the image's own directories
+    are not writable, so these point at the data volume — which also means a
+    downloaded package survives a container restart instead of being fetched
+    again on every launch.
+    """
+    data = os.environ.get("MCPHUB_DATA_DIR", "/data")
+    cache = os.path.join(data, "runtime-cache")
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
+    for key in ("LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+        if key in os.environ:
+            env[key] = os.environ[key]
+
+    # Only redirect the caches once the directory actually exists. Pointing a
+    # child at a path it cannot create is worse than leaving it on its own
+    # defaults: uvx refuses to start at all rather than falling back.
+    try:
+        os.makedirs(cache, exist_ok=True)
+    except OSError:
+        log.info("%s is not writable; launched servers will use their default cache", cache)
+        if "HOME" in os.environ:
+            env["HOME"] = os.environ["HOME"]
+        return env
+
+    env.update({
+        "HOME": cache,
+        "NPM_CONFIG_CACHE": os.path.join(cache, "npm"),
+        "UV_CACHE_DIR": os.path.join(cache, "uv"),
+        "XDG_CACHE_HOME": cache,
+    })
+    return env
+
+
+class _Stderr:
+    """Captures a launched server's stderr so a failure can quote it.
+
+    Backed by a real temporary file rather than a buffer: the transport hands
+    this straight to the subprocess, which needs a file descriptor. Only the
+    tail is ever read, so a chatty server cannot make this expensive.
+
+    When `npx` cannot find a package, or a server exits because an API key is
+    missing, the reason is on stderr and nowhere else — the transport itself
+    only reports that the process went away.
+    """
+
+    _TAIL_BYTES = 8192
+
+    def __init__(self) -> None:
+        self._file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+
+    def fileno(self) -> int:
+        return self._file.fileno()
+
+    def write(self, text: str) -> int:
+        return self._file.write(text)
+
+    def flush(self) -> None:
+        self._file.flush()
+
+    def tail(self, count: int = 8) -> str:
+        try:
+            self._file.flush()
+            size = os.fstat(self._file.fileno()).st_size
+            self._file.seek(max(0, size - self._TAIL_BYTES))
+            lines = [line.rstrip() for line in self._file.read().splitlines() if line.strip()]
+        except (OSError, ValueError):
+            return ""
+        return "\n".join(lines[-count:])
+
+    def close(self) -> None:
+        try:
+            self._file.close()
+        except OSError:
+            pass
+
+
+def _unwrap(exc: BaseException) -> BaseException:
+    """Dig the real error out of an ExceptionGroup.
+
+    The transports run inside task groups, so a failure arrives wrapped as
+    "unhandled errors in a TaskGroup (1 sub-exception)" — which tells a user
+    configuring a backend precisely nothing.
+    """
+    seen = 0
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions and seen < 5:
+        exc = exc.exceptions[0]
+        seen += 1
+    return exc
+
+
+def _explain(url: str, exc: BaseException | None, stderr: str = "") -> str:
     """Turn a transport failure into something worth putting in front of a user."""
     if exc is None:
         return f"Could not connect to {url}."
+    exc = _unwrap(exc)
     text = str(exc) or type(exc).__name__
     if isinstance(exc, httpx2.HTTPStatusError) and exc.response.status_code in (401, 403):
         return (
@@ -170,4 +324,7 @@ def _explain(url: str, exc: BaseException | None) -> str:
         )
     if isinstance(exc, httpx2.ConnectError):
         return f"Could not reach {url}: {text}. Check the URL, port and that the server is running."
-    return f"{url}: {text}"
+    message = f"{url}: {text}"
+    if stderr:
+        message += f"\n\nOutput from the server:\n{stderr}"
+    return message

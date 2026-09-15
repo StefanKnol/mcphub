@@ -28,6 +28,11 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px; margin-bottom:14px; }
   label { display:block; font-weight:600; font-size:13px; margin-bottom:5px; }
   .help { color:var(--muted); font-size:13px; margin:5px 0 0; }
+  textarea {
+    width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--ink); font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13px; resize:vertical; }
+  textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; }
   input[type=text],input[type=password],input[type=number] {
     width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
     background:var(--bg); color:var(--ink); font:inherit; }

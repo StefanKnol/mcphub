@@ -216,7 +216,10 @@ def build(hub: Any) -> list[Route]:
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[],
                           slug=slug or "", title=row["title"] if row else "",
-                          enabled=bool(row["enabled"]) if row else True)
+                          # A plugin whose tool surface comes from elsewhere starts
+                          # disabled, so its tools are reviewed before they attach.
+                          enabled=bool(row["enabled"]) if row
+                          else not getattr(plugin, "review_before_enable", False))
 
         assert form is not None
         new_slug = str(form.get("slug", "")).strip().lower()

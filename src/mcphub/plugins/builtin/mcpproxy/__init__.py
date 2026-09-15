@@ -35,6 +35,18 @@ CATALOG_KEY = "tool_catalog"
 ALLOW_KEY = "tools"
 
 
+def _parse_env(raw: str) -> dict[str, str]:
+    """KEY=VALUE per line. Blank lines and # comments ignored."""
+    env: dict[str, str] = {}
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        env[key.strip()] = value.strip()
+    return env
+
+
 def _upstream(instance: BackendInstance) -> Upstream:
     headers: dict[str, str] = {}
     header_name = str(instance.get("auth_header", "") or "").strip()
@@ -42,7 +54,9 @@ def _upstream(instance: BackendInstance) -> Upstream:
     if header_name and header_value:
         headers[header_name] = header_value
     return Upstream(UpstreamConfig(
-        url=str(instance.get("url", "")).strip(),
+        url=str(instance.get("url", "") or "").strip(),
+        command=str(instance.get("command", "") or "").strip(),
+        env=_parse_env(str(instance.get("env", "") or "")),
         headers=headers,
         timeout=float(instance.get("timeout", 30) or 30),
         verify_tls=bool(instance.get("verify_tls", True)),
@@ -76,9 +90,30 @@ class McpProxyPlugin(PluginDefaults):
         "which of its tools to expose."
     )
 
+    review_before_enable = True
+
     fields = (
-        ConfigField("url", "Upstream URL", placeholder="http://192.168.1.50:8043/mcp",
-                    help="The server's streamable-HTTP MCP endpoint, including its path."),
+        ConfigField(
+            "command", "Command", required=False,
+            placeholder="npx -y @modelcontextprotocol/server-filesystem /data",
+            help=(
+                "Have the hub launch the server itself. Use this for anything on npm "
+                "(`npx -y <package>`) or PyPI (`uvx <package>`) — no registry of our own "
+                "and nothing to install by hand. The server runs in its own process, so "
+                "it cannot read credentials stored for other backends. "
+                "Leave blank to connect to a server that is already running, below."
+            ),
+        ),
+        ConfigField(
+            "env", "Environment", type="textarea", secret=True, required=False,
+            placeholder="GITHUB_TOKEN=ghp_...\nBRAVE_API_KEY=...",
+            help=(
+                "KEY=VALUE per line, passed to the launched server. Most published servers "
+                "take their API key this way. Encrypted at rest and never shown again."
+            ),
+        ),
+        ConfigField("url", "Upstream URL", required=False, placeholder="http://192.168.1.50:8043/mcp",
+                    help="For a server that is already running: its streamable-HTTP MCP endpoint, including the path. Ignored when a command is set."),
         ConfigField("auth_header", "Auth header name", required=False, placeholder="Authorization",
                     help="Leave blank if the upstream needs no credentials."),
         ConfigField("auth_value", "Auth header value", type="password", secret=True, required=False,
@@ -98,6 +133,8 @@ class McpProxyPlugin(PluginDefaults):
 
     def build(self, instance: BackendInstance) -> MCPServer:
         upstream = _upstream(instance)
+        if not upstream._cfg.url and not upstream._cfg.command:
+            log.warning("backend %s has neither a command nor a URL", instance.slug)
         allow = _allowed(instance)
         catalog = _catalog(instance)
 
@@ -124,8 +161,8 @@ class McpProxyPlugin(PluginDefaults):
         return mcp
 
     async def check(self, instance: BackendInstance) -> CheckResult:
-        if not str(instance.get("url", "")).strip():
-            return CheckResult(False, "Upstream URL is required.")
+        if not str(instance.get("command", "") or "").strip() and not str(instance.get("url", "") or "").strip():
+            return CheckResult(False, "Set either a command to launch, or the URL of a running server.")
         upstream = _upstream(instance)
         try:
             tools = await upstream.list_tools()
@@ -134,7 +171,8 @@ class McpProxyPlugin(PluginDefaults):
             shown = len(tools) if allow is None else len([t for t in tools if t.name in allow])
             name = info.get("name") or "upstream"
             version = info.get("version") or "?"
-            return CheckResult(True, f"Connected to {name} {version} — exposing {shown} of {len(tools)} tools")
+            how = "Launched" if upstream._cfg.is_stdio else "Connected to"
+            return CheckResult(True, f"{how} {name} {version} — exposing {shown} of {len(tools)} tools")
         except UpstreamError as exc:
             return CheckResult(False, str(exc))
         except Exception as exc:  # noqa: BLE001 - surfaced verbatim in the UI
