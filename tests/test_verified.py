@@ -34,9 +34,32 @@ def test_unavailable_is_not_verified():
 
 
 def test_a_recent_check_is_verified_and_reports_the_count():
-    v = entry(status="ok", tool_count=24, last_verified=date.today().isoformat())
-    assert v.ok and not v.stale
-    assert "24 tools" in v.summary
+    v = entry(status="ok", tool_count=24, probes_passed=2, last_verified=date.today().isoformat())
+    assert v.ok and v.probed and not v.stale
+    assert "24 tools" in v.summary and "2 checks" in v.summary
+
+
+def test_launching_is_not_verified_behaviour():
+    """The whole point of the split.
+
+    The server this project replaced starts fine and lists 182 tools fine; its
+    writes are the broken part. A badge that could not tell those apart would
+    have passed it.
+    """
+    v = entry(status="launched", tool_count=182, last_verified=date.today().isoformat())
+    assert v.ok, "it did launch"
+    assert not v.probed, "but nothing about its behaviour was tested"
+    assert "Verified" not in v.summary
+    assert v.summary.startswith("Launches")
+
+
+def test_probes_passed_without_ok_status_is_not_probed():
+    assert not entry(status="failed", probes_passed=3).probed
+
+
+def test_ok_with_no_probes_does_not_claim_verification():
+    """Guards a hand-edit that sets ok without anything having been run."""
+    assert not entry(status="ok", tool_count=5, probes_passed=0).probed
 
 
 def test_an_old_check_is_marked_stale():
@@ -75,10 +98,15 @@ def test_shipped_file_is_valid_and_machine_written():
     assert payload["schemaVersion"] == 1
     for row in payload["servers"]:
         assert row.get("name")
-        assert row.get("status") in {"ok", "failed", "unavailable", "unchecked"}
+        assert row.get("status") in {"ok", "launched", "failed", "unavailable", "unchecked"}
+        if row["status"] in {"ok", "launched"}:
+            assert row.get("lastVerified"), f"{row['name']} claims success with no check date"
+            assert row.get("toolCount"), f"{row['name']} claims success with no tools observed"
         if row["status"] == "ok":
-            assert row.get("lastVerified"), f"{row['name']} claims ok with no check date"
-            assert row.get("toolCount"), f"{row['name']} claims ok with no tools observed"
+            assert row.get("probesPassed"), (
+                f"{row['name']} is marked verified but ran no behavioural probes; "
+                "that is the 'launched' level"
+            )
 
 
 @pytest.mark.parametrize("name", ["io.github.StefanKnol/mikrotik-mcp"])
@@ -96,3 +124,14 @@ def test_shipped_entries_are_keyed_by_registry_name():
         assert "/" in row["name"], (
             f"{row['name']!r} is not a registry name, so no search result will ever match it"
         )
+
+
+def test_declared_probes_are_well_formed():
+    """A probe missing its expectation would pass by doing nothing."""
+    for row in json.loads(verified.DATA_FILE.read_text())["servers"]:
+        for probe in row.get("probes") or []:
+            assert probe.get("tool"), f"{row['name']}: a probe with no tool"
+            assert probe.get("expectError") or probe.get("expectContains"), (
+                f"{row['name']}: probe {probe.get('tool')!r} asserts nothing, so it always passes"
+            )
+            assert probe.get("why"), f"{row['name']}: probe {probe.get('tool')!r} says nothing about intent"

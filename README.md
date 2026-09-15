@@ -226,14 +226,31 @@ Servers not in the registry are still added by hand, with a command or a URL.
 
 ### Verified servers
 
-A result can carry a **✓ Verified** badge. It means a scheduled job actually
-launched that server through this hub and listed its tools — it is not a claim
-by the server's author, and a self-declared compatibility flag would be exactly
-the badge this exists to avoid.
+A result can carry one of two badges, and the difference matters.
 
-It says the server starts, completes an MCP handshake and reports its tools. It
-does **not** say every tool works, or that the server is safe to run. Everything
-without a badge is simply unchecked, not suspect.
+**Launches** means the server started, completed a handshake and listed its
+tools. That is a liveness check and nothing more. The MikroTik server this
+project was built to replace passes it comfortably — it starts fine and lists
+182 tools fine, and every one of its write tools is broken. A badge that
+stopped here would be measuring the wrong thing confidently.
+
+**✓ Verified** means that, plus every behavioural probe the entry declares ran
+and returned what it should. A probe is a read-only tool call with an expected
+outcome, declared in `verified.json`:
+
+```json
+{"tool": "update_firewall_rule", "arguments": {"rule_id": "3"},
+ "expectError": "position",
+ "why": "a positional index is refused before it can reach the device"}
+```
+
+That one exercises the exact logic the replaced server got wrong, and needs no
+router to do it: probes run against TEST-NET addresses, so anything that would
+reach a real device simply fails to connect.
+
+Neither badge is a claim by the server's author, and neither says every tool
+works or that a server is safe to run. A probe says the behaviour it names is
+the behaviour observed. Everything without a badge is unchecked, not suspect.
 
 `src/mcphub/data/verified.json` holds the results and ships with the hub, so the
 badge reflects the build you are running. `.github/workflows/verify-servers.yml`

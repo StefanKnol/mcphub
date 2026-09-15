@@ -46,6 +46,49 @@ async def resolve_command(entry: dict) -> str:
     return server.command
 
 
+async def run_probes(upstream: Upstream, probes: list[dict]) -> tuple[int, str | None]:
+    """Run each declared probe. Returns (passed, first failure).
+
+    A probe is a tool call with an expected outcome, so it tests behaviour
+    rather than presence. Probes must be safe against a target that does not
+    exist — they run against TEST-NET addresses, so anything that would reach a
+    real device simply fails to connect, and anything rejected before it gets
+    that far is exactly what is being checked.
+    """
+    passed = 0
+    for probe in probes:
+        tool = probe.get("tool")
+        if not tool:
+            continue
+        want_error = probe.get("expectError")
+        want_text = probe.get("expectContains")
+        label = probe.get("why") or tool
+        try:
+            result = await asyncio.wait_for(
+                upstream.call_tool(tool, probe.get("arguments") or {}), timeout=60
+            )
+        except Exception as exc:  # noqa: BLE001 - a raised error may be the expectation
+            text, errored = str(exc), True
+        else:
+            text = "\n".join(
+                getattr(b, "text", "") or "" for b in (getattr(result, "content", None) or [])
+            )
+            errored = bool(getattr(result, "is_error", False))
+
+        if want_error:
+            if not errored:
+                return passed, f"{label}: expected a refusal, got a result"
+            if want_error.lower() not in text.lower():
+                return passed, f"{label}: refused, but not for the stated reason ({text[:80]})"
+        elif want_text:
+            if errored:
+                return passed, f"{label}: failed ({text[:80]})"
+            if want_text.lower() not in text.lower():
+                return passed, f"{label}: ran, but the result did not mention {want_text!r}"
+        passed += 1
+    return passed, None
+
+
 async def verify(entry: dict) -> dict:
     """Return the entry with observed fields replaced by this run's findings."""
     result = dict(entry)
@@ -66,12 +109,22 @@ async def verify(entry: dict) -> dict:
     try:
         tools = await asyncio.wait_for(upstream.list_tools(), timeout=LAUNCH_TIMEOUT)
         info = await upstream.server_info()
-        return {**result, "status": "ok", "toolCount": len(tools),
-                "lastVerified": date.today().isoformat(),
-                "detail": f"{info.get('name') or '?'} {info.get('version') or ''}".strip(),
-                "command": command}
+        identity = f"{info.get('name') or '?'} {info.get('version') or ''}".strip()
+
+        probes = entry.get("probes") or []
+        passed, failure = await run_probes(upstream, probes)
+        if failure:
+            return {**result, "status": "failed", "toolCount": len(tools), "probesPassed": passed,
+                    "lastVerified": date.today().isoformat(), "detail": failure, "command": command}
+
+        # Without probes this is a liveness check and says so. The server this
+        # project replaced launches happily and lists 182 tools; its writes are
+        # the broken part, which no amount of listing would reveal.
+        status = "ok" if passed else "launched"
+        return {**result, "status": status, "toolCount": len(tools), "probesPassed": passed,
+                "lastVerified": date.today().isoformat(), "detail": identity, "command": command}
     except Exception as exc:  # noqa: BLE001 - the failure is the finding
-        return {**result, "status": "failed", "toolCount": None,
+        return {**result, "status": "failed", "toolCount": None, "probesPassed": 0,
                 "lastVerified": date.today().isoformat(),
                 "detail": str(exc).splitlines()[0][:200]}
     finally:
@@ -104,13 +157,15 @@ async def main() -> int:
 
     results, regressed = [], []
     for entry in entries:
-        was_ok = entry.get("status") == "ok"
+        was_ok = entry.get("status") in {"ok", "launched"}
         outcome = await verify(entry)
         results.append(outcome)
 
-        mark = {"ok": "ok      ", "failed": "FAILED  ", "unavailable": "n/a     "}.get(outcome["status"], "?       ")
+        mark = {"ok": "verified", "launched": "launches", "failed": "FAILED  ",
+                "unavailable": "n/a     "}.get(outcome["status"], "?       ")
         tools = f"{outcome['toolCount']} tools" if outcome.get("toolCount") else ""
-        print(f"  {mark} {outcome['name']:52} {tools:10} {outcome.get('detail', '')[:60]}")
+        checks = f"{outcome.get('probesPassed') or 0} checks"
+        print(f"  {mark} {outcome['name']:44} {tools:10} {checks:10} {outcome.get('detail', '')[:44]}")
 
         if was_ok and outcome["status"] != "ok":
             regressed.append(outcome["name"])
@@ -121,7 +176,8 @@ async def main() -> int:
         print(f"\nwrote {DATA_FILE.relative_to(Path.cwd())}")
 
     verified = sum(1 for r in results if r["status"] == "ok")
-    print(f"\n{verified}/{len(results)} verified")
+    launched = sum(1 for r in results if r["status"] == "launched")
+    print(f"\n{verified}/{len(results)} verified (behaviour probed), {launched} launched only")
     if regressed:
         print("REGRESSED: " + ", ".join(regressed), file=sys.stderr)
         return 1

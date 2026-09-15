@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "$comment": "Observed fields are written by scripts/verify_servers.py, which launches each server and records what it saw. Entries are keyed by official MCP registry name, since that is what the browser matches against. Do not hand-edit status/toolCount/lastVerified: an entry is worth something only because a machine checked it.",
+  "$comment": "Written by scripts/verify_servers.py. 'launched' means the server started and listed its tools \u2014 a liveness check only. 'ok' additionally means every declared probe ran and returned what it should, which is what tests behaviour. Probes must be safe against a target that does not exist. Do not hand-edit the observed fields.",
   "servers": [
     {
       "name": "io.github.StefanKnol/mikrotik-mcp",
@@ -15,7 +15,25 @@
       "toolCount": 24,
       "lastVerified": "2026-09-15",
       "detail": "mikrotik 0.1.0",
-      "command": "uvx mikrotik-mcp"
+      "command": "uvx mikrotik-mcp",
+      "probes": [
+        {
+          "tool": "connectivity_check",
+          "arguments": {},
+          "expectContains": "reachable",
+          "why": "a tool actually executes and returns structured data"
+        },
+        {
+          "tool": "update_firewall_rule",
+          "arguments": {
+            "rule_id": "3",
+            "comment": "probe"
+          },
+          "expectError": "position",
+          "why": "a positional index is refused before it can reach the device"
+        }
+      ],
+      "probesPassed": 2
     }
   ]
 }

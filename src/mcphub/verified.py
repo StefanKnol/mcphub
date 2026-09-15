@@ -4,13 +4,23 @@ The registry lists what people have published; it says nothing about whether a
 given server works once mcphub launches it. This is the difference between "the
 author says it is an MCP server" and "we started it and it answered".
 
-Entries are produced by `scripts/verify_servers.py`, which launches each server
-and records the tool count it observed. Nothing here is a claim by the server's
-author, which is the whole point — a self-declared compatibility flag would be
-exactly the hope-it-works badge this exists to replace.
+Entries are produced by `scripts/verify_servers.py`. Nothing here is a claim by
+the server's author, which is the whole point — a self-declared compatibility
+flag would be exactly the hope-it-works badge this exists to replace.
 
-What a verified entry does *not* mean: that every tool works, or that the server
-is safe. It means it launched, completed an MCP handshake, and listed its tools.
+Two levels, because they are worth very different amounts:
+
+- **launched** — the server started, completed a handshake and listed its
+  tools. That is a liveness check and nothing more. The MikroTik server this
+  project was built to replace would pass it comfortably: it starts fine and
+  lists 182 tools fine, and every one of its write tools is broken.
+- **verified** — that, plus every behavioural probe the entry declares actually
+  ran and returned what it should. A probe is a read-only tool call with an
+  expected outcome, so it exercises the server's logic rather than its
+  existence.
+
+Neither level says every tool works, or that a server is safe to run. A probe
+says the behaviour it names is the behaviour observed.
 """
 
 from __future__ import annotations
@@ -35,10 +45,17 @@ class Verification:
     status: str = "unchecked"
     tool_count: int | None = None
     last_verified: str | None = None
+    probes_passed: int = 0
 
     @property
     def ok(self) -> bool:
-        return self.status == "ok"
+        """Launched at all. The weaker of the two levels."""
+        return self.status in {"ok", "launched"}
+
+    @property
+    def probed(self) -> bool:
+        """Behaviour was actually exercised, not merely listed."""
+        return self.status == "ok" and self.probes_passed > 0
 
     @property
     def stale(self) -> bool:
@@ -56,7 +73,12 @@ class Verification:
         if not self.ok:
             return "Not verified"
         tools = f"{self.tool_count} tools" if self.tool_count else "launched"
-        return f"Verified — {tools}"
+        if self.probed:
+            checks = "check" if self.probes_passed == 1 else "checks"
+            return f"Verified — {tools}, {self.probes_passed} {checks}"
+        # Deliberately not "Verified": nothing about this server's behaviour
+        # was tested, only that it answers.
+        return f"Launches — {tools}"
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +100,7 @@ def _load() -> dict[str, Verification]:
             status=row.get("status", "unchecked"),
             tool_count=row.get("toolCount"),
             last_verified=row.get("lastVerified"),
+            probes_passed=int(row.get("probesPassed") or 0),
         )
     return entries
 

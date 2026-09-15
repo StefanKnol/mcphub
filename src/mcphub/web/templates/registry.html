@@ -4,9 +4,12 @@
 <h1>Add from the MCP registry</h1>
 <p class="sub">Search the official registry. A published server declares how it is run
 and what settings it takes, so the form for it is generated rather than typed.</p>
-<p class="note" style="margin:-14px 0 20px">A <span class="pill on">&#10003; Verified</span> badge
-means a scheduled job actually launched that server through this hub and listed its tools —
-not that its author said it would work. Everything else is simply unchecked.</p>
+<p class="note" style="margin:-14px 0 20px">
+<span class="pill on">&#10003; Verified</span> means a scheduled job ran behavioural checks against
+that server through this hub and they returned what they should.
+<span class="pill">Launches</span> means only that it started and listed its tools — a server whose
+every tool is broken passes that, so it is reported separately rather than dressed up.
+Neither is a claim by the server's author. Everything else is simply unchecked.</p>
 
 <form method="get" action="/registry" class="card" style="display:flex;gap:10px;align-items:center">
   <input type="search" name="q" value="{{ query }}" autofocus
@@ -32,9 +35,12 @@ not that its author said it would work. Everything else is simply unchecked.</p>
         {% if s.command %}<span class="pill">launched</span>{% else %}<span class="pill">remote</span>{% endif %}
         {% if s.env %}<span class="pill">{{ s.env|length }} setting{{ '' if s.env|length == 1 else 's' }}</span>{% endif %}
         {% set v = s.verification %}
-        {% if v and v.ok %}
-          <span class="pill on" title="Launched here and its tools listed{% if v.last_verified %} on {{ v.last_verified }}{% endif %}. Not a statement that every tool works, or that the server is safe.">
+        {% if v and v.probed %}
+          <span class="pill on" title="Launched here and {{ v.probes_passed }} behavioural check(s) run against it{% if v.last_verified %} on {{ v.last_verified }}{% endif %}. Says the behaviour those checks name is what was observed — not that every tool works, or that the server is safe.">
             &#10003; {{ v.summary }}{% if v.stale %} (stale){% endif %}</span>
+        {% elif v and v.ok %}
+          <span class="pill" title="Started and listed its tools{% if v.last_verified %} on {{ v.last_verified }}{% endif %}. Nothing about its behaviour was tested — a server whose tools are all broken passes this.">
+            {{ v.summary }}{% if v.stale %} (stale){% endif %}</span>
         {% endif %}
       </div>
       <p class="help" style="margin-top:4px">{{ s.description }}</p>
