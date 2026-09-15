@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Backends — mcphub{% endblock %}
+{% block body %}
+<h1>Backends</h1>
+<p class="sub">Each backend is its own MCP endpoint. Add each one to Claude as a separate
+connector so their tools stay in separate lists.</p>
+
+{% if not backends %}
+  <div class="card"><p style="margin:0 0 12px">No backends yet.</p>
+  <p class="note" style="margin:0 0 14px">Add one below to get an MCP endpoint you can connect to.</p></div>
+{% endif %}
+
+{% for b in backends %}
+<div class="card">
+  <div class="backend">
+    <div class="meta">
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+        <strong>{{ b.title }}</strong>
+        <span class="pill">{{ b.plugin_name }}</span>
+        {% if not b.enabled %}<span class="pill off">disabled</span>
+        {% elif b.mounted %}<span class="pill on">live</span>
+        {% else %}<span class="pill off">not mounted</span>{% endif %}
+      </div>
+      {% if b.enabled %}<code class="url">{{ b.url }}</code>{% endif %}
+      <div class="actions">
+        <a class="btn" href="/backends/{{ b.slug }}">Settings</a>
+        <button type="button" class="test" data-slug="{{ b.slug }}">Test connection</button>
+        <span class="result" id="r-{{ b.slug }}"></span>
+        <form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
+              onsubmit="return confirm('Delete {{ b.title }}? Its endpoint stops working immediately and its stored credentials are erased.')">
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<h2>Add a backend</h2>
+<div class="card">
+  {% for p in plugins %}
+  <div style="padding:10px 0;{% if not loop.last %}border-bottom:1px solid var(--line){% endif %}">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="flex:1"><strong>{{ p.name }}</strong>
+        <p class="help" style="margin-top:3px">{{ p.description }}</p></div>
+      <a class="btn" href="/backends/new?plugin={{ p.id }}">Add</a>
+    </div>
+  </div>
+  {% else %}
+  <p class="note" style="margin:0">No plugins installed. Install a package that registers
+    an <code>mcphub.plugins</code> entry point and restart.</p>
+  {% endfor %}
+</div>
+
+<script>
+document.querySelectorAll("button.test").forEach(function (btn) {
+  btn.addEventListener("click", async function () {
+    var slug = btn.dataset.slug;
+    var out = document.getElementById("r-" + slug);
+    btn.disabled = true;
+    out.className = "result";
+    out.textContent = "Testing\u2026";
+    try {
+      var res = await fetch("/backends/" + encodeURIComponent(slug) + "/test", { method: "POST" });
+      var data = await res.json();
+      out.className = "result " + (data.ok ? "ok" : "bad");
+      out.textContent = data.detail;
+    } catch (err) {
+      out.className = "result bad";
+      out.textContent = "Test failed: " + err;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
+</script>
+{% endblock %}

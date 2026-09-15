@@ -1,0 +1,15 @@
+services:
+  mcphub:
+    build: .
+    # image: ghcr.io/you/mcphub:latest   # once you publish one
+    container_name: mcphub
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      # Must be the URL clients actually reach, i.e. the reverse proxy's.
+      # OAuth discovery compares issuer strings exactly, so a mismatch here
+      # fails in confusing ways.
+      MCPHUB_PUBLIC_URL: "https://mcp.example.com"

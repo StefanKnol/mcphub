@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sign in — mcphub{% endblock %}
+{% block body %}
+<div class="card" style="max-width:420px;margin:40px auto">
+  {% if client_name %}
+    <h1>Authorize {{ client_name }}</h1>
+    <p class="sub">Sign in to let <strong>{{ client_name }}</strong> connect to this hub.</p>
+  {% else %}
+    <h1>Sign in</h1>
+    <p class="sub">mcphub configuration</p>
+  {% endif %}
+  {% if error %}<div class="errors">{{ error }}</div>{% endif %}
+  <form method="post" action="/login{% if auth_request %}?req={{ auth_request }}{% endif %}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <div class="field"><label for="u">Username</label>
+      <input id="u" name="username" autocomplete="username" autofocus required></div>
+    <div class="field"><label for="p">Password</label>
+      <input id="p" type="password" name="password" autocomplete="current-password" required></div>
+    <button class="primary" type="submit" style="width:100%">
+      {% if client_name %}Sign in and authorize{% else %}Sign in{% endif %}</button>
+  </form>
+</div>
+{% endblock %}

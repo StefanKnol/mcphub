@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}mcphub{% endblock %}</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14171a; --muted: #5b6570;
+    --line: #dfe3e8; --accent: #1f6feb; --ok: #1a7f46; --bad: #b3261e;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1116; --panel:#161b22; --ink:#e6edf3; --muted:#9aa7b4;
+            --line:#2a313a; --accent:#589bff; --ok:#3fb950; --bad:#f85149; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  a { color: var(--accent); }
+  header { border-bottom:1px solid var(--line); background:var(--panel); }
+  .bar { max-width:900px; margin:0 auto; padding:14px 20px; display:flex; align-items:center; gap:16px; }
+  .bar strong { font-size:16px; letter-spacing:-.01em; }
+  .bar nav { margin-left:auto; display:flex; gap:16px; font-size:14px; }
+  main { max-width:900px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:-.02em; }
+  h2 { font-size:16px; margin:28px 0 10px; }
+  .sub { color:var(--muted); margin:0 0 22px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px; margin-bottom:14px; }
+  label { display:block; font-weight:600; font-size:13px; margin-bottom:5px; }
+  .help { color:var(--muted); font-size:13px; margin:5px 0 0; }
+  input[type=text],input[type=password],input[type=number] {
+    width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--ink); font:inherit; }
+  input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  .field { margin-bottom:16px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .row > .field { flex:1 1 220px; }
+  button, .btn {
+    font:inherit; font-weight:600; padding:9px 15px; border-radius:8px; cursor:pointer;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); text-decoration:none;
+    display:inline-block; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--bad); border-color:var(--bad); background:transparent; }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+  .pill { font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+  .pill.on { color:var(--ok); border-color:var(--ok); }
+  .pill.off { color:var(--muted); }
+  code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  .url { display:block; margin-top:8px; padding:8px 10px; background:var(--bg);
+         border:1px solid var(--line); border-radius:8px; word-break:break-all; }
+  .errors { border:1px solid var(--bad); color:var(--bad); border-radius:8px; padding:11px 14px; margin-bottom:18px; }
+  .note { color:var(--muted); font-size:13px; }
+  .backend { display:flex; gap:14px; align-items:flex-start; }
+  .backend .meta { flex:1; min-width:0; }
+  .checkline { display:flex; align-items:center; gap:9px; }
+  .checkline label { margin:0; font-weight:500; }
+  .result { font-size:13px; margin-left:4px; }
+  .result.ok { color:var(--ok); } .result.bad { color:var(--bad); }
+  .toolbar { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  button.tiny { padding:3px 9px; font-size:12px; font-weight:500; }
+  .filter { flex:1 1 160px; padding:5px 9px; border:1px solid var(--line); border-radius:7px;
+            background:var(--bg); color:var(--ink); font:inherit; font-size:13px; }
+  .picker { max-height:340px; overflow-y:auto; border:1px solid var(--line);
+            border-radius:8px; padding:6px 10px; background:var(--bg); }
+  .pick { display:flex; gap:8px; align-items:flex-start; padding:3px 0; }
+  .pick label { font-weight:400; margin:0; font-size:13px; cursor:pointer; }
+  .pick input { margin-top:3px; flex:none; }
+  .count { margin-left:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td,th { text-align:left; padding:7px 10px 7px 0; border-bottom:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <strong>mcphub</strong>
+  {% if user %}<nav>
+    <a href="/">Backends</a><a href="/account">Account</a>
+    <form method="post" action="/logout" style="display:inline"><button style="padding:2px 10px;font-size:13px">Sign out</button></form>
+  </nav>{% endif %}
+</div></header>
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>

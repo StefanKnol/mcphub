@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}{{ plugin.name }} — mcphub{% endblock %}
+{% block body %}
+<h1>{% if row %}{{ row.title }}{% else %}Add {{ plugin.name }}{% endif %}</h1>
+<p class="sub">{{ plugin.description }}</p>
+
+{% if errors %}<div class="errors">
+  {% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+
+<form method="post" class="card">
+  <input type="hidden" name="plugin_id" value="{{ plugin.id }}">
+  <div class="row">
+    <div class="field">
+      <label for="title">Display name</label>
+      <input id="title" name="title" value="{{ title }}" required>
+      <p class="help">Shown in the backend list and to the MCP client.</p>
+    </div>
+    <div class="field">
+      <label for="slug">URL name</label>
+      <input id="slug" name="slug" value="{{ slug }}" pattern="[a-z0-9][a-z0-9-]{0,38}[a-z0-9]" required>
+      <p class="help">The endpoint becomes <code>{{ public_url }}/mcp/<em>this</em></code>.
+        Changing it breaks connectors already pointed at the old address.</p>
+    </div>
+  </div>
+
+  {% for item in fields %}
+  <div class="field">
+    {% if item.field.type == "multiselect" %}
+      <label>{{ item.field.label }}</label>
+      {% if item.field.help %}<p class="help">{{ item.field.help }}</p>{% endif %}
+      {% if item.options %}
+        <div class="toolbar">
+          <button type="button" class="tiny" data-all="{{ item.field.key }}">Select all</button>
+          <button type="button" class="tiny" data-none="{{ item.field.key }}">Select none</button>
+          <input type="search" class="filter" data-for="{{ item.field.key }}" placeholder="Filter&hellip;">
+          <span class="note count" id="count-{{ item.field.key }}"></span>
+        </div>
+        <div class="picker" data-group="{{ item.field.key }}">
+          {% for opt in item.options %}
+          <div class="pick" data-label="{{ opt.value }} {{ opt.help }}">
+            <input type="checkbox" id="o-{{ item.field.key }}-{{ loop.index }}"
+                   name="{{ item.field.key }}" value="{{ opt.value }}"
+                   {% if opt.value in item.selected %}checked{% endif %}>
+            <label for="o-{{ item.field.key }}-{{ loop.index }}">
+              <span class="mono">{{ opt.label }}</span>
+              {% if opt.help %}<span class="note"> — {{ opt.help }}</span>{% endif %}
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="help">
+          {% if not row %}Save this backend first, then come back to choose which tools to expose.
+          {% else %}Could not reach the upstream server to list its tools. Fix the connection and reload.{% endif %}
+        </p>
+        {% for value in item.selected %}
+          <input type="hidden" name="{{ item.field.key }}" value="{{ value }}">
+        {% endfor %}
+        {% if item.selected %}<p class="help">Keeping {{ item.selected|length }} previously selected tool(s).</p>{% endif %}
+      {% endif %}
+    {% elif item.field.type == "bool" %}
+      <div class="checkline">
+        <input type="checkbox" id="f-{{ item.field.key }}" name="{{ item.field.key }}"
+               {% if item.value %}checked{% endif %}>
+        <label for="f-{{ item.field.key }}">{{ item.field.label }}</label>
+      </div>
+    {% else %}
+      <label for="f-{{ item.field.key }}">{{ item.field.label }}{% if not item.field.required %}
+        <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>
+      <input id="f-{{ item.field.key }}" name="{{ item.field.key }}"
+             type="{% if item.field.type == 'password' %}password{% elif item.field.type == 'number' %}number{% else %}text{% endif %}"
+             value="{% if not item.field.secret %}{{ item.value }}{% endif %}"
+             {% if item.field.placeholder %}placeholder="{{ item.field.placeholder }}"{% endif %}
+             {% if item.field.secret %}autocomplete="new-password"{% endif %}
+             {% if item.field.required and not item.has_value %}required{% endif %}>
+    {% endif %}
+    {% if item.field.help and item.field.type != "multiselect" %}<p class="help">{{ item.field.help }}</p>{% endif %}
+    {% if item.has_value %}<p class="help">Saved. Leave blank to keep the current value.</p>{% endif %}
+  </div>
+  {% endfor %}
+
+  <div class="field">
+    <div class="checkline">
+      <input type="checkbox" id="enabled" name="enabled" {% if enabled %}checked{% endif %}>
+      <label for="enabled">Enabled</label>
+    </div>
+    <p class="help">Disabling takes the endpoint down without deleting the configuration.</p>
+  </div>
+
+  <div class="actions">
+    <button class="primary" type="submit">Save</button>
+    <a class="btn" href="/">Cancel</a>
+  </div>
+</form>
+
+<script>
+document.querySelectorAll(".picker").forEach(function (picker) {
+  var group = picker.dataset.group;
+  var boxes = picker.querySelectorAll("input[type=checkbox]");
+  var count = document.getElementById("count-" + group);
+
+  function refresh() {
+    var n = picker.querySelectorAll("input[type=checkbox]:checked").length;
+    count.textContent = n === 0
+      ? "none selected \u2014 all " + boxes.length + " will be exposed"
+      : n + " of " + boxes.length + " selected";
+  }
+  boxes.forEach(function (b) { b.addEventListener("change", refresh); });
+  refresh();
+
+  var setAll = document.querySelector('[data-all="' + group + '"]');
+  var setNone = document.querySelector('[data-none="' + group + '"]');
+  if (setAll) setAll.addEventListener("click", function () {
+    picker.querySelectorAll(".pick:not([hidden]) input").forEach(function (b) { b.checked = true; });
+    refresh();
+  });
+  if (setNone) setNone.addEventListener("click", function () {
+    boxes.forEach(function (b) { b.checked = false; });
+    refresh();
+  });
+
+  var filter = document.querySelector('.filter[data-for="' + group + '"]');
+  if (filter) filter.addEventListener("input", function () {
+    var q = filter.value.toLowerCase();
+    picker.querySelectorAll(".pick").forEach(function (row) {
+      row.hidden = q !== "" && row.dataset.label.toLowerCase().indexOf(q) === -1;
+    });
+  });
+});
+</script>
+{% endblock %}

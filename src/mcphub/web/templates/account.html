@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Account — mcphub{% endblock %}
+{% block body %}
+<h1>Account</h1><p class="sub">Signed in as <strong>{{ user.username }}</strong>.</p>
+<div class="card" style="max-width:460px">
+  <h2 style="margin-top:0">Change password</h2>
+  {% if error %}<div class="errors">{{ error }}</div>{% endif %}
+  {% if done %}<p class="note" style="color:var(--ok)">Password changed. Other browser sessions were signed out; connectors you already authorized keep working.</p>{% endif %}
+  <form method="post">
+    <div class="field"><label for="c">Current password</label>
+      <input id="c" type="password" name="current_password" autocomplete="current-password" required></div>
+    <div class="field"><label for="n">New password</label>
+      <input id="n" type="password" name="new_password" autocomplete="new-password" minlength="12" required>
+      <p class="help">At least 12 characters.</p></div>
+    <button class="primary" type="submit">Change password</button>
+  </form>
+</div>
+{% endblock %}
