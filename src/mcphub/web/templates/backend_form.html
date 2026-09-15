@@ -7,7 +7,7 @@
 {% if errors %}<div class="errors">
   {% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
 
-<form method="post" class="card">
+<form method="post" class="card validated">
   <input type="hidden" name="plugin_id" value="{{ plugin.id }}">
   <div class="row">
     <div class="field">

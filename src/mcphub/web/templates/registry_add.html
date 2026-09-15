@@ -7,7 +7,7 @@
 {% if errors %}<div class="errors">
   {% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
 
-<form method="post" action="/registry/add?name={{ server.name|urlencode }}" class="card">
+<form class="validated" method="post" action="/registry/add?name={{ server.name|urlencode }}" class="card">
   <input type="hidden" name="registry_name" value="{{ server.name }}">
 
   <p class="note" style="margin-top:0">

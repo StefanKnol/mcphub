@@ -78,6 +78,19 @@
   .pick label { font-weight:400; margin:0; font-size:13px; cursor:pointer; }
   .pick input { margin-top:3px; flex:none; }
   .count { margin-left:auto; }
+  /* A styled <dialog>, not the platform's confirm(): the native dialog ignores
+     the page's theming entirely and looks wrong in dark mode. Using the element
+     rather than hand-rolling one keeps focus trapping, background inerting and
+     Escape-to-close, which are tedious to get right by hand. */
+  dialog.modal {
+    border:1px solid var(--line); border-radius:var(--radius); padding:0;
+    background:var(--panel); color:var(--ink); max-width:420px; width:calc(100% - 40px); }
+  dialog.modal::backdrop { background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
+  dialog.modal .body { padding:20px 20px 0; }
+  dialog.modal h3 { margin:0 0 8px; font-size:16px; }
+  dialog.modal p { margin:0; color:var(--muted); font-size:14px; }
+  dialog.modal .foot { display:flex; gap:10px; justify-content:flex-end; padding:18px 20px 20px; }
+  .field-error { color:var(--bad); font-size:13px; margin:5px 0 0; }
   table { width:100%; border-collapse:collapse; font-size:14px; }
   td,th { text-align:left; padding:7px 10px 7px 0; border-bottom:1px solid var(--line); }
 </style>
@@ -91,5 +104,92 @@
   </nav>{% endif %}
 </div></header>
 <main>{% block body %}{% endblock %}</main>
+
+<dialog class="modal" id="app-confirm">
+  <div class="body">
+    <h3 id="app-confirm-title">Are you sure?</h3>
+    <p id="app-confirm-body"></p>
+  </div>
+  <div class="foot">
+    <button type="button" data-close>Cancel</button>
+    <button type="button" class="danger" id="app-confirm-go">Confirm</button>
+  </div>
+</dialog>
+
+<script>
+// Any form carrying data-confirm asks in-page instead of through confirm().
+(function () {
+  var dialog = document.getElementById("app-confirm");
+  var title = document.getElementById("app-confirm-title");
+  var body = document.getElementById("app-confirm-body");
+  var go = document.getElementById("app-confirm-go");
+  var pending = null;
+
+  dialog.querySelector("[data-close]").addEventListener("click", function () { dialog.close(); });
+  go.addEventListener("click", function () {
+    var form = pending;
+    dialog.close();
+    if (form) { form.dataset.confirmed = "1"; form.submit(); }
+  });
+
+  document.querySelectorAll("form[data-confirm]").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      if (form.dataset.confirmed) return;
+      event.preventDefault();
+      pending = form;
+      title.textContent = form.dataset.confirmTitle || "Are you sure?";
+      body.textContent = form.dataset.confirm;
+      go.textContent = form.dataset.confirmAction || "Confirm";
+      dialog.showModal();
+    });
+  });
+})();
+
+// Native validation bubbles are the browser's own widget and ignore the theme,
+// so forms opt out and the message is rendered in the page instead.
+(function () {
+  document.querySelectorAll("form.validated").forEach(function (form) {
+    form.setAttribute("novalidate", "");
+
+    function clear(field) {
+      var existing = field.parentNode.querySelector(".field-error");
+      if (existing) existing.remove();
+    }
+
+    function complain(field) {
+      clear(field);
+      var message = field.dataset.error
+        || (field.validity.valueMissing ? "This field is required."
+        : field.validity.patternMismatch ? "That is not a valid value for this field."
+        : field.validity.tooShort ? "This needs to be at least " + field.minLength + " characters."
+        : "Please check this value.");
+      var note = document.createElement("p");
+      note.className = "field-error";
+      note.textContent = message;
+      field.insertAdjacentElement("afterend", note);
+    }
+
+    form.addEventListener("submit", function (event) {
+      var bad = null;
+      form.querySelectorAll("input, textarea, select").forEach(function (field) {
+        if (field.disabled || field.type === "hidden") return;
+        if (field.checkValidity()) { clear(field); return; }
+        complain(field);
+        if (!bad) bad = field;
+      });
+      if (bad) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        bad.focus();
+        bad.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    });
+
+    form.addEventListener("input", function (event) {
+      if (event.target.checkValidity()) clear(event.target);
+    });
+  });
+})();
+</script>
 </body>
 </html>

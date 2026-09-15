@@ -15,6 +15,8 @@ import pytest
 TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "mcphub" / "web" / "templates"
 INPUT_TAG = re.compile(r"<input\b[^>]*>", re.IGNORECASE | re.DOTALL)
 COMMENTS = re.compile(r"<!--.*?-->|/\*.*?\*/", re.DOTALL)
+# `//` line comments too, but not the `//` in a URL, which is preceded by a colon.
+LINE_COMMENTS = re.compile(r"(?<!:)//[^\n]*")
 STYLED_TYPES = {"text", "password", "number", "search", "email", "url"}
 
 
@@ -25,10 +27,11 @@ def template_files():
 def markup(path: Path) -> str:
     """Template text with comments removed.
 
-    A CSS comment explaining this very rule quotes `<input name="username">`
-    as the example, which the scan would otherwise report as a real offender.
+    Comments explaining these very rules quote the things they forbid — a CSS
+    comment shows `<input name="username">`, a JS comment mentions `confirm()` —
+    and the scans would otherwise report them as real offenders.
     """
-    return COMMENTS.sub("", path.read_text())
+    return LINE_COMMENTS.sub("", COMMENTS.sub("", path.read_text()))
 
 
 @pytest.mark.parametrize("path", template_files(), ids=lambda p: p.name)
@@ -63,3 +66,39 @@ def test_invalid_styling_waits_for_interaction():
     css = (TEMPLATES / "base.html").read_text()
     assert "input:user-invalid" in css
     assert not re.search(r"(?<!user-)input:invalid\b", css), "bare :invalid fires before typing"
+
+
+# ── no browser-default UI ─────────────────────────────────────────────────
+# The app's own theming is the point: native dialogs and validation bubbles are
+# drawn by the user agent and ignore it completely, dark mode included.
+
+BROWSER_DIALOGS = re.compile(r"\b(confirm|alert|prompt)\s*\(")
+
+
+@pytest.mark.parametrize("path", template_files(), ids=lambda p: p.name)
+def test_no_native_dialogs(path):
+    found = BROWSER_DIALOGS.findall(markup(path))
+    assert not found, (
+        f"{path.name}: uses the browser's {found[0]}() dialog. "
+        "Use the styled modal instead: put data-confirm on the form."
+    )
+
+
+@pytest.mark.parametrize("path", template_files(), ids=lambda p: p.name)
+def test_forms_with_constraints_opt_out_of_native_validation(path):
+    """A required field without `validated` shows the browser's own bubble."""
+    for form in re.findall(r"<form\b.*?</form>", markup(path), re.DOTALL | re.IGNORECASE):
+        opening = form[: form.index(">") + 1]
+        constrained = re.search(r"\brequired\b|\bpattern=|\bminlength=", form, re.IGNORECASE)
+        if constrained and "validated" not in opening:
+            raise AssertionError(
+                f"{path.name}: a form with validation constraints is missing class=\"validated\", "
+                "so the browser will draw its own message bubble:\n  "
+                + " ".join(opening.split())[:110]
+            )
+
+
+def test_the_modal_exists_for_templates_to_use():
+    base = (TEMPLATES / "base.html").read_text()
+    assert 'id="app-confirm"' in base
+    assert "dialog.modal::backdrop" in base, "an unstyled backdrop is the browser's own look"

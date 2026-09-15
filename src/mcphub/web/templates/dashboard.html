@@ -27,7 +27,10 @@ connector so their tools stay in separate lists.</p>
         <button type="button" class="test" data-slug="{{ b.slug }}">Test connection</button>
         <span class="result" id="r-{{ b.slug }}"></span>
         <form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
-              onsubmit="return confirm('Delete {{ b.title }}? Its endpoint stops working immediately and its stored credentials are erased.')">
+              data-confirm-title="Delete {{ b.title }}?"
+              data-confirm="Its endpoint stops working immediately and its stored credentials are erased. This cannot be undone."
+              data-confirm-action="Delete"
+              data-confirm>
           <button class="danger" type="submit">Delete</button>
         </form>
       </div>

@@ -10,7 +10,7 @@
     <p class="sub">mcphub configuration</p>
   {% endif %}
   {% if error %}<div class="errors">{{ error }}</div>{% endif %}
-  <form method="post" action="/login{% if auth_request %}?req={{ auth_request }}{% endif %}">
+  <form class="validated" method="post" action="/login{% if auth_request %}?req={{ auth_request }}{% endif %}">
     <input type="hidden" name="next" value="{{ next_url }}">
     <div class="field"><label for="u">Username</label>
       <input id="u" type="text" name="username" autocomplete="username" autofocus required></div>
