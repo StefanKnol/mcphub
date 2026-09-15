@@ -1,8 +1,8 @@
 services:
   mcphub:
     # Published by .github/workflows/ci.yml on every push to main.
-    # Set DOCKERHUB_USERNAME in a .env beside this file, or replace inline.
-    image: ${DOCKERHUB_USERNAME:-stefanknol}/mcphub:latest
+    # Set DOCKER_IMAGE in a .env beside this file, or replace inline.
+    image: ${DOCKER_IMAGE:-mcphub}:latest
     # Swap the line above for this to build from a checkout instead:
     # build: .
     container_name: mcphub

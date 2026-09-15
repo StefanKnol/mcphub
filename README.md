@@ -54,25 +54,33 @@ in, and you approve the connection.
 ### Deploying
 
 Every push to `main` runs the test suite and, if it passes, builds a
-multi-arch image (amd64 + arm64) and pushes it to Docker Hub as
-`<user>/mcphub:latest`. Tags matching `v*` also publish semver tags. Pull
-requests build the image to prove the Dockerfile still works, but do not push.
+multi-arch image (amd64 + arm64) and pushes it to your container registry.
+Tags matching `v*` also publish semver tags. Pull requests build the image to
+prove the Dockerfile still works, but do not push.
 
-Two repository secrets drive it:
+Repository secrets drive it — the registry host included, so nothing about
+your infrastructure lives in the workflow:
 
-| Secret | Value |
-| --- | --- |
-| `DOCKERHUB_USERNAME` | Your Docker Hub account name. |
-| `DOCKERHUB_TOKEN` | A Docker Hub **access token** with Read/Write, not your account password. |
+| Secret | Required | Value |
+| --- | --- | --- |
+| `DOCKER_REGISTRY` | yes | Registry host, e.g. `registry.example.com`. |
+| `DOCKER_USERNAME` | yes | Registry account. |
+| `DOCKER_PASSWORD` | yes | Registry password or access token. Prefer a token where the registry supports one. |
+| `DOCKER_IMAGE` | no | Full image path when the registry needs a namespace, e.g. `registry.example.com/homelab/mcphub`. Defaults to `<DOCKER_REGISTRY>/mcphub`. |
 
 ```bash
-gh secret set DOCKERHUB_USERNAME
-gh secret set DOCKERHUB_TOKEN
+gh secret set DOCKER_REGISTRY
+gh secret set DOCKER_USERNAME
+gh secret set DOCKER_PASSWORD
 ```
 
-Create the token at Docker Hub → Account Settings → Personal access tokens. A
-token is scoped and revocable on its own; an account password is neither, and
-it also unlocks the account itself.
+Two things the runner needs, both easy to miss:
+
+- **The registry must be reachable from the public internet.** GitHub-hosted
+  runners cannot see a LAN-only registry. If yours is internal, use a
+  self-hosted runner on that network instead.
+- **Its TLS certificate must chain to a public CA.** A private CA or a
+  self-signed certificate will fail the login on a hosted runner.
 
 #### On Unraid
 

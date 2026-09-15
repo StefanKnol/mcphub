@@ -53,23 +53,44 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Check registry secrets
+        # A missing secret otherwise surfaces as an opaque login failure, which
+        # is a slow thing to diagnose from a red tick.
+        if: github.event_name != 'pull_request'
+        run: |
+          missing=""
+          [ -n "${{ secrets.DOCKER_REGISTRY }}" ] || missing="$missing DOCKER_REGISTRY"
+          [ -n "${{ secrets.DOCKER_USERNAME }}" ] || missing="$missing DOCKER_USERNAME"
+          [ -n "${{ secrets.DOCKER_PASSWORD }}" ] || missing="$missing DOCKER_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing"
+            echo "Set them with: gh secret set <NAME>"
+            exit 1
+          fi
+
+      - name: Log in to the registry
         # Pull requests from forks cannot read secrets, so the build below still
         # runs on a PR to prove the Dockerfile is sound — it just does not push.
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Derive tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # The username is masked in logs because it comes from a secret, so
-          # tags render as ***/mcphub. To read them, set a repository variable
-          # DOCKERHUB_USERNAME too and use vars.DOCKERHUB_USERNAME here.
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/mcphub
+          # Set DOCKER_IMAGE when the registry needs a namespace or project
+          # segment (Harbor, Nexus and GitLab all do), e.g.
+          # registry.example.com/homelab/mcphub. Otherwise the image sits at the
+          # registry root as <registry>/mcphub.
+          #
+          # These come from secrets, so tags render masked in the logs. To read
+          # them, move the non-sensitive parts to repository variables and use
+          # vars.* here instead.
+          images: ${{ secrets.DOCKER_IMAGE || format('{0}/mcphub', secrets.DOCKER_REGISTRY) }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
