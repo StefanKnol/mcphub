@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
@@ -49,24 +49,46 @@ def _issuer_url(value: str) -> AnyHttpUrl:
 
 
 @dataclass
+class Variant:
+    """One version of a backend, running in its own process."""
+
+    version: str
+    server: MCPServer
+    app: Any
+    owner: asyncio.Task[None]
+    stop: asyncio.Event
+
+
+@dataclass
 class Mounted:
     slug: str
     instance: BackendInstance
-    server: MCPServer
+    plugin: Plugin
     resource_url: str
     routes: list[Any]
-    owner: asyncio.Task[None]
-    stop: asyncio.Event
+    variants: dict[str, Variant] = field(default_factory=dict)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def server(self) -> MCPServer:
+        """The default variant's server, for callers that just want one."""
+        return self.variants[""].server
 
 
 class MountManager:
     """Owns the live set of backend endpoints and keeps the router in sync."""
 
-    def __init__(self, app: Any, provider: HubOAuthProvider, settings: Any, db: Any = None) -> None:
+    def __init__(self, app: Any, provider: HubOAuthProvider, settings: Any, db: Any = None,
+                 load_instance: Any = None) -> None:
         self._app = app
         self._provider = provider
         self._settings = settings
         self._db = db
+        # A version's catalogue is written when someone pins it, which is after
+        # the backend was mounted. Building a variant from the snapshot taken at
+        # mount time would use config that predates the pin — and produce a
+        # server with no tools at all.
+        self._load_instance = load_instance
         self._public_url = settings.public_url.rstrip("/")
         self._verifier = ProviderTokenVerifier(provider)
         self._mounted: dict[str, Mounted] = {}
@@ -77,19 +99,11 @@ class MountManager:
     def active(self) -> list[Mounted]:
         return sorted(self._mounted.values(), key=lambda m: m.slug)
 
-    async def mount(self, plugin: Plugin, instance: BackendInstance) -> Mounted:
-        """Bring a backend up, replacing any earlier mount of the same slug."""
-        await self.unmount(instance.slug)
-
-        server = plugin.build(instance)
-        resource_url = self.resource_url(instance.slug)
-
-        # `streamable_http_path="/"` because the mount prefix already carries
-        # the path; the SDK would otherwise serve at /mcp/{slug}/mcp.
-        #
-        # `transport_security` is not optional in practice: without it the SDK
-        # accepts only a 127.0.0.1 Host header, so behind a reverse proxy every
-        # MCP request is rejected with 421 after OAuth has already succeeded.
+    async def _start_variant(self, plugin: Plugin, instance: BackendInstance,
+                             version: str) -> Variant:
+        """Build and start one version's server. Same lifespan dance as a mount."""
+        shaped = plugin.variant(instance, version) if version else instance
+        server = plugin.build(shaped)
         sub_app = server.streamable_http_app(
             streamable_http_path="/",
             transport_security=TransportSecuritySettings(
@@ -99,12 +113,6 @@ class MountManager:
             ),
         )
 
-        # The sub-app's lifespan is the streamable-HTTP session manager, which
-        # opens an anyio task group. A task group must be exited by the task
-        # that entered it, and mounts are torn down from request handlers while
-        # they are first set up during startup — different tasks. So each mount
-        # gets an owner task that holds its lifespan open for as long as it
-        # lives, and unmounting asks that task to finish.
         stop = asyncio.Event()
         ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
@@ -114,32 +122,74 @@ class MountManager:
                     if not ready.done():
                         ready.set_result(None)
                     await stop.wait()
-            except BaseException as exc:  # noqa: BLE001 - reported to mount()
+            except BaseException as exc:  # noqa: BLE001 - reported to the starter
                 if not ready.done():
                     ready.set_exception(exc)
                 else:
-                    log.exception("backend %s stopped unexpectedly", instance.slug)
+                    log.exception("backend %s (%s) stopped unexpectedly",
+                                  instance.slug, version or "default")
 
-        owner = asyncio.create_task(own(), name=f"mount:{instance.slug}")
+        owner = asyncio.create_task(own(), name=f"mount:{instance.slug}:{version or 'default'}")
         try:
             await asyncio.wait_for(asyncio.shield(ready), timeout=30)
         except BaseException:
             stop.set()
             owner.cancel()
             raise
+        return Variant(version=version, server=server, app=sub_app, owner=owner, stop=stop)
 
-        # Order matters and is easy to get backwards: AuthenticationMiddleware
-        # is what puts the authenticated user on the scope, so it has to be the
-        # *outer* layer. RequireAuthMiddleware then reads that and enforces the
-        # scope, answering with the WWW-Authenticate header that tells a client
-        # where to authenticate. Nested the other way round, the check runs
-        # before anything has authenticated and every request is a 401.
+    def pin_for(self, username: str | None, slug: str) -> str:
+        """The version this account chose for this backend, or "" for the default."""
+        if not username or self._db is None:
+            return ""
+        row = self._db.one(
+            "SELECT p.version FROM backend_pins p "
+            "JOIN users u ON u.id = p.user_id JOIN backends b ON b.id = p.backend_id "
+            "WHERE u.username = ? AND b.slug = ?",
+            (username, slug),
+        )
+        return str(row["version"]) if row and row["version"] else ""
+
+    async def variant(self, slug: str, version: str) -> Variant:
+        """The running server for one version, started if this is its first caller."""
+        mounted = self._mounted.get(slug)
+        if mounted is None:
+            raise LookupError(f"{slug} is not mounted")
+        existing = mounted.variants.get(version)
+        if existing is not None:
+            return existing
+
+        async with mounted.lock:
+            # Another request may have started it while we waited.
+            existing = mounted.variants.get(version)
+            if existing is not None:
+                return existing
+            current = mounted.instance
+            if self._load_instance is not None:
+                fresh = self._load_instance(slug)
+                if fresh is not None:
+                    current = fresh
+            started = await self._start_variant(mounted.plugin, current, version)
+            mounted.variants[version] = started
+            log.info("backend %s started at version %s", slug, version or "default")
+            return started
+
+    async def mount(self, plugin: Plugin, instance: BackendInstance) -> Mounted:
+        """Bring a backend up, replacing any earlier mount of the same slug."""
+        await self.unmount(instance.slug)
+
+        resource_url = self.resource_url(instance.slug)
+        default = await self._start_variant(plugin, instance, "")
+
+        # Order outward: authenticate, require a token with the right scope,
+        # check this account may use this backend, then route it to the version
+        # it pinned. Nested the other way round, the check runs before anything
+        # has authenticated and every request is a 401.
         #
         # `resource_server_url` is what pins a token to *this* backend: a token
         # minted for another backend on the same hub is refused, not honoured.
-        # Order outward: authenticate, require a token with the right scope,
-        # then check this particular account may use this particular backend.
-        authorized = _Authorized(sub_app, self._db, instance.slug) if self._db is not None else sub_app
+        dispatch = _VersionDispatch(self, instance.slug)
+        authorized = _Authorized(dispatch, self._db, instance.slug) if self._db is not None else dispatch
         guarded = AuthenticationMiddleware(
             RequireAuthMiddleware(
                 authorized,
@@ -152,9 +202,7 @@ class MountManager:
 
         # Not Starlette's Mount: its regex is `^/mcp/{slug}(?P<path>/.*)$`, so a
         # request to the bare endpoint — which is exactly the URL you paste into
-        # a client — does not match, and falls through to the 404 handler. The
-        # endpoint is a single URL, so match it exactly and hand the sub-app the
-        # root path it expects.
+        # a client — does not match, and falls through to the 404 handler.
         routes: list[Any] = [
             Route(
                 f"{MOUNT_PREFIX}/{instance.slug}",
@@ -171,7 +219,8 @@ class MountManager:
             resource_name=instance.title,
         )
 
-        mounted = Mounted(instance.slug, instance, server, resource_url, routes, owner, stop)
+        mounted = Mounted(instance.slug, instance, plugin, resource_url, routes,
+                          variants={"": default})
         self._mounted[instance.slug] = mounted
         self._insert_routes(routes)
         log.info("mounted backend %s (%s) at %s", instance.slug, plugin.id, resource_url)
@@ -182,17 +231,19 @@ class MountManager:
         if mounted is None:
             return
         self._remove_routes(mounted.routes)
-        mounted.stop.set()
-        try:
-            await asyncio.wait_for(asyncio.shield(mounted.owner), timeout=15)
-        except asyncio.TimeoutError:
-            log.warning("backend %s did not shut down in time; cancelling", slug)
-            mounted.owner.cancel()
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001 - already unmounted either way
-            log.exception("backend %s raised while shutting down", slug)
-        log.info("unmounted backend %s", slug)
+        for variant in list(mounted.variants.values()):
+            variant.stop.set()
+            try:
+                await asyncio.wait_for(asyncio.shield(variant.owner), timeout=15)
+            except asyncio.TimeoutError:
+                log.warning("backend %s (%s) did not shut down in time; cancelling",
+                            slug, variant.version or "default")
+                variant.owner.cancel()
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - already unmounted either way
+                log.exception("backend %s raised while shutting down", slug)
+        log.info("unmounted backend %s (%d version(s))", slug, len(mounted.variants))
 
     async def unmount_all(self) -> None:
         for slug in list(self._mounted):
@@ -215,6 +266,50 @@ class MountManager:
         for route in routes:
             if route in table:
                 table.remove(route)
+
+
+class _VersionDispatch:
+    """Send a request to the version the calling account pinned.
+
+    Accounts may sit on different versions of the same backend, so one endpoint
+    can front several running servers. Each is started the first time someone on
+    that version connects, and a version nobody is using costs nothing.
+
+    A pinned version can also offer a different set of tools, which is why this
+    routes to a whole server rather than merely swapping a subprocess: offering
+    an account a tool its own version does not have would fail only when it
+    tried to call it.
+    """
+
+    def __init__(self, manager: "MountManager", slug: str) -> None:
+        self._manager = manager
+        self._slug = slug
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        user = scope.get("user")
+        token = getattr(user, "access_token", None)
+        version = self._manager.pin_for(getattr(token, "subject", None), self._slug)
+        try:
+            variant = await self._manager.variant(self._slug, version)
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            log.exception("could not start %s at version %r", self._slug, version)
+            await _unavailable(send, self._slug, version, exc)
+            return
+        await variant.app(scope, receive, send)
+
+
+async def _unavailable(send: Send, slug: str, version: str, exc: Exception) -> None:
+    body = json.dumps({
+        "error": "backend_unavailable",
+        "error_description": (
+            f"{slug!r} could not be started at the pinned version {version!r}: {exc}. "
+            "Clear the pin to use the backend's default version."
+        ),
+    }).encode()
+    await send({"type": "http.response.start", "status": 503,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
 
 
 class _Authorized:

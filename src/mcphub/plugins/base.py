@@ -143,6 +143,14 @@ class Plugin(Protocol):
         """
         ...
 
+    def variant(self, instance: BackendInstance, version: str) -> BackendInstance:
+        """The same backend as it should run at a particular version.
+
+        Returning `instance` unchanged means the plugin does not do versions,
+        and every account gets the one configuration.
+        """
+        ...
+
     def fields_for(self, instance: BackendInstance | None) -> Sequence[ConfigField]:
         """The settings form for one backend, which need not be the generic one.
 
@@ -161,6 +169,9 @@ class PluginDefaults:
 
     def fields_for(self, instance: BackendInstance | None) -> Sequence[ConfigField]:
         return self.fields
+
+    def variant(self, instance: BackendInstance, version: str) -> BackendInstance:
+        return instance
 
     review_before_enable: bool = False
     """Create new backends of this kind disabled.

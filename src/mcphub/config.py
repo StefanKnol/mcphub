@@ -36,6 +36,10 @@ class Settings:
     host: str
     port: int
     dev_mode: bool
+    update_interval: int = 3600
+    """Seconds between registry update checks. 0 disables the background check
+    entirely; the floor is enforced in UpdateChecker so a small value cannot
+    become a hot loop against someone else's service."""
     """Relaxes the HTTPS requirement on the public URL. Never enable in production."""
 
     @property
@@ -104,4 +108,5 @@ class Settings:
             host=os.environ.get("MCPHUB_HOST", "0.0.0.0"),
             port=int(os.environ.get("MCPHUB_PORT", "8080")),
             dev_mode=dev_mode,
+            update_interval=int(os.environ.get("MCPHUB_UPDATE_INTERVAL", "3600")),
         )

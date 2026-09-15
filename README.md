@@ -122,12 +122,34 @@ reporting what actually changed:
 updated 1.29.0 -> 1.30.0; 1 new tool(s): convert_time
 ```
 
-Pin a version in the command when you would rather updates be deliberate:
+**Per-account version pinning.** Anyone granted a backend can choose which
+version *they* get, from the selector on its card. It is not a permission and
+it affects nobody else — which means the hub runs both versions at once, each
+started the first time someone on it connects, and a version nobody uses costs
+nothing.
+
+Each version gets its own server rather than a swapped subprocess, because a
+version can offer a different set of tools: of one real server, 0.14.8.0 has
+174 and 0.15.0.0 has 182. Offering an account a tool its own version lacks
+would fail only when it tried to call it.
+
+A version is launched and read when it is first pinned, so one that cannot
+start is refused there and then, with the reason, rather than at the next
+connection. Only registry-added backends can be pinned — guessing which token
+of a hand-written command is the package would eventually rewrite the wrong
+one. For those, pin in the command itself:
 
 ```
 uvx mikrotik-mcp==0.1.0
 npx -y some-server@1.4.2
 ```
+
+**Knowing an update exists.** A background check asks the registry hourly
+whether a newer version of each registry-backed backend has been published, and
+marks the card when one has. It changes nothing on its own. The registry serves
+repeats from its own cache and publishes no rate limit, so one small query per
+backend per hour is unremarkable; failures back off, and startup is staggered so
+restarted hubs do not arrive in lockstep.
 
 **The tool list this hub serves.** Cached when the backend is saved, so that an
 endpoint still mounts when its upstream is down. **Update** re-reads it. Until
@@ -166,6 +188,7 @@ Only these are environment variables. Everything else lives in the database.
 | `MCPHUB_PUBLIC_URL` | `http://localhost:8080` | Externally reachable origin. Must be HTTPS in production. |
 | `MCPHUB_DATA_DIR` | `/data` | Holds `hub.db` and `master.key`. |
 | `MCPHUB_HOST` / `MCPHUB_PORT` | `0.0.0.0` / `8080` | Bind address. |
+| `MCPHUB_UPDATE_INTERVAL` | `3600` | Seconds between registry update checks. `0` disables them. |
 | `MCPHUB_ALLOWED_HOSTS` | derived | Extra Host header values to accept, comma-separated. Only needed when the hub answers on a name other than `MCPHUB_PUBLIC_URL`. |
 | `MCPHUB_DEV` | unset | Starlette debug output. Does not relax the HTTPS requirement — OAuth needs an HTTPS issuer, so only `localhost` and `127.0.0.1` may use http. |
 

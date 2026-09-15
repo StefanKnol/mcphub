@@ -21,6 +21,7 @@ from .db import Database, utcnow
 from .mounts import MountManager
 from .plugins.base import BackendInstance
 from .plugins.registry import PluginRegistry
+from .updates import UpdateChecker
 from .web import routes as web_routes
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class Hub:
         self.registry.load_entry_points()
         self.provider = HubOAuthProvider(self.db)
         self.mounts: MountManager | None = None  # set once the app exists
+        self.updates = UpdateChecker(self, settings.update_interval)
 
     # ── backend instances ─────────────────────────────────────────────────
 
@@ -60,6 +62,11 @@ class Hub:
             config=json.loads(row["config_json"]),
             secrets=self.secrets.open(row["secrets_blob"]),
         )
+
+    def current_instance(self, slug: str) -> BackendInstance | None:
+        """This backend as it is stored right now, not as it was when mounted."""
+        row = self.backend_row(slug)
+        return self.instance_from_row(row) if row is not None else None
 
     def backend_rows(self, enabled_only: bool = False) -> list[Any]:
         sql = "SELECT * FROM backends"
@@ -121,16 +128,20 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 "=" * 68, password, settings.public_url, "=" * 68,
             )
 
-        hub.mounts = MountManager(app, hub.provider, settings, hub.db)
+        hub.mounts = MountManager(app, hub.provider, settings, hub.db,
+                                  load_instance=hub.current_instance)
         for row in hub.backend_rows(enabled_only=True):
             error = await hub.remount(row["slug"])
             if error:
                 log.error("backend %s did not mount: %s", row["slug"], error)
 
         hub.db.purge_expired()
+        if settings.update_interval > 0:
+            hub.updates.start()
         try:
             yield
         finally:
+            await hub.updates.stop()
             await hub.mounts.unmount_all()
             hub.db.close()
 

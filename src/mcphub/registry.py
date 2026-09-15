@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +29,8 @@ from .verified import Verification, lookup as lookup_verification
 log = logging.getLogger(__name__)
 
 REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers"
+MAX_LIMIT = 100
+"""The registry rejects a larger `limit` with 422 rather than clamping it."""
 OFFICIAL_META = "io.modelcontextprotocol.registry/official"
 
 # What each registry type is launched with when the entry does not say.
@@ -47,6 +50,40 @@ class EnvVar:
 
 
 @dataclass(frozen=True)
+class PackageRef:
+    """Enough to rebuild the launch command at a chosen version."""
+
+    registry_type: str
+    identifier: str
+    runtime: str
+    args: tuple[str, ...] = ()
+
+    def command(self, version: str = "") -> str:
+        """The command line, optionally pinned.
+
+        The two registries spell a pin differently, and getting it wrong is
+        silent: `uvx pkg@1.2.3` is not an error, it is a request for a package
+        whose name happens to contain an at-sign.
+        """
+        spec = self.identifier
+        if version:
+            if self.registry_type == "npm":
+                spec = f"{self.identifier}@{version}"
+            elif self.registry_type == "pypi":
+                spec = f"{self.identifier}=={version}"
+            else:
+                spec = f"{self.identifier}:{version}"
+        return " ".join([self.runtime, *self.args, spec]).strip()
+
+
+@dataclass(frozen=True)
+class ServerVersion:
+    version: str
+    is_latest: bool
+    package: PackageRef | None
+
+
+@dataclass(frozen=True)
 class RegistryServer:
     name: str
     title: str
@@ -59,6 +96,7 @@ class RegistryServer:
     """Set instead of `command` when the server is hosted rather than launched."""
     env: tuple[EnvVar, ...] = field(default_factory=tuple)
     icons: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    package: PackageRef | None = None
 
     @property
     def verification(self) -> Verification | None:
@@ -84,18 +122,26 @@ class RegistryServer:
         return bool(self.command or self.remote_url)
 
 
-def _build_command(package: dict[str, Any]) -> str:
-    """Compose the command line the registry entry describes."""
-    runtime = package.get("runtimeHint") or RUNTIME_HINTS.get(package.get("registryType", ""), "")
+def _package_ref(package: dict[str, Any]) -> PackageRef | None:
+    """The launchable package from a registry entry, if it has one."""
+    registry_type = package.get("registryType", "")
+    # `runtimeHint` is frequently absent, so the registry type decides.
+    runtime = package.get("runtimeHint") or RUNTIME_HINTS.get(registry_type, "")
     identifier = package.get("identifier", "")
     if not runtime or not identifier:
-        return ""
-    args = [
+        return None
+    args = tuple(
         str(a.get("value"))
         for a in package.get("runtimeArguments") or []
         if a.get("value") is not None
-    ]
-    return " ".join([runtime, *args, identifier])
+    )
+    return PackageRef(registry_type=registry_type, identifier=identifier, runtime=runtime, args=args)
+
+
+def _build_command(package: dict[str, Any]) -> str:
+    """Compose the unpinned command line the registry entry describes."""
+    ref = _package_ref(package)
+    return ref.command() if ref else ""
 
 
 def _parse(entry: dict[str, Any]) -> RegistryServer | None:
@@ -104,13 +150,13 @@ def _parse(entry: dict[str, Any]) -> RegistryServer | None:
     if not name:
         return None
 
-    command, env = "", ()
+    command, env, package_ref = "", (), None
     # Prefer a package we can actually launch over one we cannot.
     for package in server.get("packages") or []:
-        built = _build_command(package)
-        if not built:
+        ref = _package_ref(package)
+        if ref is None:
             continue
-        command = built
+        command, package_ref = ref.command(), ref
         env = tuple(
             EnvVar(
                 name=v["name"],
@@ -142,6 +188,7 @@ def _parse(entry: dict[str, Any]) -> RegistryServer | None:
         remote_url=remote_url,
         env=env,
         icons=icons,
+        package=package_ref,
     )
 
 
@@ -187,7 +234,7 @@ async def search(query: str, limit: int = 30) -> list[RegistryServer]:
     Note the parameter is `search`. Passing `q` is accepted with a 200 and the
     *unfiltered* list, which looks like a search that matches everything.
     """
-    params = {"limit": str(max(1, min(limit * 4, 100)))}
+    params = {"limit": str(max(1, min(limit * 4, MAX_LIMIT)))}
     if query.strip():
         params["search"] = query.strip()
 
@@ -207,3 +254,43 @@ async def get(name: str) -> RegistryServer | None:
         if server.name == name:
             return server
     return None
+
+
+async def versions(name: str, limit: int = MAX_LIMIT) -> list[ServerVersion]:
+    """Every published version of one server, newest first.
+
+    Taken from the registry rather than from PyPI or npm: the registry lists
+    one row per published version, and those are the versions actually released
+    *as an MCP server*, which is not always every release of the package.
+    """
+    payload = await anyio.to_thread.run_sync(
+        lambda: _fetch({"search": name, "limit": str(min(limit, MAX_LIMIT))})
+    )
+    found: dict[str, ServerVersion] = {}
+    for entry in payload.get("servers") or []:
+        server = entry.get("server") or {}
+        if server.get("name") != name:
+            continue
+        version = str(server.get("version") or "")
+        if not version or version in found:
+            continue
+        meta = (entry.get("_meta") or {}).get(OFFICIAL_META) or {}
+        package = next(
+            (ref for ref in (_package_ref(p) for p in server.get("packages") or []) if ref),
+            None,
+        )
+        found[version] = ServerVersion(version, bool(meta.get("isLatest")), package)
+
+    return sorted(found.values(), key=lambda v: _sortable(v.version), reverse=True)
+
+
+def _sortable(version: str) -> tuple[Any, ...]:
+    """Order versions numerically where possible, textually where not.
+
+    Published versions are not reliably semver — `0.15.0.0` and `1.0.0-rc1`
+    both occur — so each dot-separated part sorts as a number when it is one.
+    """
+    parts: list[Any] = []
+    for chunk in re.split(r"[.\-+]", version):
+        parts.append((0, int(chunk)) if chunk.isdigit() else (1, chunk))
+    return tuple(parts)

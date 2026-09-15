@@ -248,6 +248,12 @@ def build(hub: Any) -> list[Route]:
                 "icon": _backend_icon(row),
                 "initials": _initials(row["title"]),
                 "version": _config_value(row, "upstream_version"),
+                "latest": _config_value(row, "latest_version"),
+                "pinnable": bool(_config_value(row, "registry_name")
+                                 and json.loads(row["config_json"]).get("registry_package")),
+                "pinned": (lambda r: r["version"] if r else "")(hub.db.one(
+                    "SELECT version FROM backend_pins WHERE user_id = ? AND backend_id = ?",
+                    (user["id"], row["id"])) if user else None),
                 "upstream_name": _config_value(row, "upstream_name"),
             }
             for row in hub.backend_rows()
@@ -361,7 +367,13 @@ def build(hub: Any) -> list[Route]:
         new_slug = str(form.get("slug", "")).strip().lower()
         title = str(form.get("title", "")).strip()
         enabled = form.get("enabled") is not None
-        config, secret, errors = split_fields(plugin, form, instance)
+        posted, secret, errors = split_fields(plugin, form, instance)
+        # Overlaid on what is already stored, not replacing it. The form covers
+        # the plugin's declared fields; a backend also carries things no field
+        # maps to — where it came from in the registry, its package reference,
+        # the catalogues read from it — and building the config from the form
+        # alone silently discarded all of that on the first save.
+        config = {**(instance.config if instance else {}), **posted}
 
         if not SLUG_RE.match(new_slug):
             errors.append("URL name must be lowercase letters, digits and dashes (2–40 characters).")
@@ -496,6 +508,107 @@ def build(hub: Any) -> list[Route]:
 
         return JSONResponse({"ok": True, "detail": "; ".join(parts)})
 
+    async def backend_versions(request: Request) -> Response:
+        """Versions this backend can be pinned to, for the selector."""
+        user = require_user(request)
+        slug = request.path_params["slug"]
+        if not user or not may_use(user, slug):
+            return JSONResponse({"versions": []}, status_code=403)
+
+        row = hub.backend_row(slug)
+        if row is None:
+            return JSONResponse({"versions": []}, status_code=404)
+        config = json.loads(row["config_json"])
+        name = config.get("registry_name")
+        if not name or not config.get("registry_package"):
+            # A hand-written command has nothing reliable to pin against.
+            return JSONResponse({"versions": [], "pinnable": False})
+
+        try:
+            available = await mcp_registry.versions(name)
+        except mcp_registry.RegistryError as exc:
+            return JSONResponse({"versions": [], "pinnable": True, "error": str(exc)})
+
+        current = hub.db.one(
+            "SELECT version FROM backend_pins WHERE user_id = ? AND backend_id = ?",
+            (user["id"], row["id"]))
+        return JSONResponse({
+            "pinnable": True,
+            "pinned": current["version"] if current else "",
+            "default": config.get("upstream_version", ""),
+            "versions": [{"version": v.version, "latest": v.is_latest} for v in available],
+        })
+
+    async def backend_pin(request: Request) -> Response:
+        """Choose the version this account gets. Only this account.
+
+        Pinning is not a permission: anyone granted the backend may hold
+        themselves on an older version without affecting anyone else. The cost
+        is that the hub then runs both, which is why the version is launched
+        and read here rather than taken on trust.
+        """
+        user = require_user(request)
+        slug = request.path_params["slug"]
+        if not user:
+            return JSONResponse({"ok": False, "detail": "Not signed in."}, status_code=401)
+        if not may_use(user, slug):
+            return JSONResponse({"ok": False, "detail": "No access to this backend."}, status_code=403)
+
+        row = hub.backend_row(slug)
+        if row is None:
+            return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
+        version = str((await request.form()).get("version", "")).strip()
+
+        if not version:
+            hub.db.execute("DELETE FROM backend_pins WHERE user_id = ? AND backend_id = ?",
+                           (user["id"], row["id"]))
+            return JSONResponse({"ok": True, "detail": "Following the default version."})
+
+        plugin = hub.registry.get(row["plugin_id"])
+        instance = hub.instance_from_row(row)
+        if plugin is None or not instance.config.get("registry_package"):
+            return JSONResponse({"ok": False,
+                                 "detail": "This backend has no package reference, so it cannot be pinned."},
+                                status_code=400)
+
+        catalogs = dict(instance.config.get("version_catalogs") or {})
+        if version not in catalogs:
+            # Read it now rather than at mount time: building a backend must
+            # stay offline, and a version that cannot start should fail here
+            # where there is somewhere to say so.
+            shaped = plugin.variant(instance, version)
+            try:
+                discovered = await plugin.on_save(shaped) or {}
+            except Exception as exc:  # noqa: BLE001 - reported to the caller
+                log.exception("could not read version %s of %s", version, slug)
+                return JSONResponse({"ok": False, "detail": f"{type(exc).__name__}: {exc}"},
+                                    status_code=502)
+            if not discovered:
+                return JSONResponse(
+                    {"ok": False,
+                     "detail": f"Version {version} could not be started, so it was not pinned."},
+                    status_code=502)
+            catalogs[version] = {
+                "tools": discovered.get("tool_catalog", "[]"),
+                "resources": discovered.get("resource_catalog", "[]"),
+                "prompts": discovered.get("prompt_catalog", "[]"),
+                "name": discovered.get("upstream_name", ""),
+                "version": discovered.get("upstream_version", version),
+            }
+            config = {**instance.config, "version_catalogs": catalogs}
+            _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
+                          enabled=bool(row["enabled"]), config=config,
+                          secrets=instance.secrets, row=row)
+
+        hub.db.execute(
+            "INSERT INTO backend_pins (user_id, backend_id, version, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (user_id, backend_id) DO UPDATE SET version = excluded.version",
+            (user["id"], row["id"], version, utcnow()))
+
+        tools = len(json.loads(catalogs[version].get("tools") or "[]"))
+        return JSONResponse({"ok": True,
+                             "detail": f"Pinned to {version} ({tools} tools). Only this account is affected."})
+
     async def backend_delete(request: Request) -> Response:
         user = require_user(request)
         if not user:
@@ -603,6 +716,16 @@ def build(hub: Any) -> list[Route]:
         # collapsing to a freeform blob the moment the backend exists.
         if server.icons:
             config["registry_icons"] = list(server.icons)
+        if server.package:
+            # Kept so a pinned version can be expressed precisely. Guessing
+            # which token of a command line is the package would eventually
+            # rewrite the wrong one.
+            config["registry_package"] = {
+                "registryType": server.package.registry_type,
+                "identifier": server.package.identifier,
+                "runtime": server.package.runtime,
+                "args": list(server.package.args),
+            }
         config["registry_env"] = [
             {"name": v.name, "description": v.description,
              "isRequired": v.required, "isSecret": v.secret}
@@ -750,6 +873,8 @@ def build(hub: Any) -> list[Route]:
         Route("/backends/{slug}", backend_form, methods=["GET", "POST"]),
         Route("/backends/{slug}/test", backend_test, methods=["POST"]),
         Route("/backends/{slug}/refresh", backend_refresh, methods=["POST"]),
+        Route("/backends/{slug}/versions", backend_versions),
+        Route("/backends/{slug}/pin", backend_pin, methods=["POST"]),
         Route("/backends/{slug}/delete", backend_delete, methods=["POST"]),
     ]
 

@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS backends (
     updated_at   TEXT NOT NULL
 );
 
+-- A version an account chose to stay on. Not a permission: anyone granted a
+-- backend may pin it, and the pin only affects what *they* get. Two accounts
+-- on different versions means the hub runs both, which is the cost of letting
+-- someone hold back while someone else moves on.
+CREATE TABLE IF NOT EXISTS backend_pins (
+    user_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    backend_id INTEGER NOT NULL REFERENCES backends (id) ON DELETE CASCADE,
+    version    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, backend_id)
+);
+
 CREATE TABLE IF NOT EXISTS oauth_clients (
     client_id     TEXT PRIMARY KEY,
     secret_hash   TEXT,
@@ -99,6 +111,7 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 CREATE INDEX IF NOT EXISTS idx_tokens_client ON tokens (client_id);
 CREATE INDEX IF NOT EXISTS idx_backends_slug ON backends (slug);
 CREATE INDEX IF NOT EXISTS idx_grants_user ON backend_grants (user_id);
+CREATE INDEX IF NOT EXISTS idx_pins_backend ON backend_pins (backend_id);
 """
 
 # `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so columns added

@@ -27,7 +27,15 @@ connector so their tools stay in separate lists.</p>
       <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
         <strong>{{ b.title }}</strong>
         <span class="pill">{{ b.plugin_name }}</span>
-        {% if b.version %}<span class="pill" title="{{ b.upstream_name }} {{ b.version }}, as it reported itself when last read">v{{ b.version }}</span>{% endif %}
+        {% if b.pinned %}
+          <span class="pill on" title="You are pinned to this version. Other accounts are unaffected.">pinned v{{ b.pinned }}</span>
+        {% elif b.version %}
+          <span class="pill" title="{{ b.upstream_name }} {{ b.version }}, as it reported itself when last read">v{{ b.version }}</span>
+        {% endif %}
+        {% if b.latest and b.version and b.latest != b.version and not b.pinned %}
+          <span class="pill" style="color:var(--accent);border-color:var(--accent)"
+                title="The registry has {{ b.latest }}. Press Update to move to it; nothing moves on its own.">v{{ b.latest }} available</span>
+        {% endif %}
         {% if not b.enabled %}<span class="pill off">disabled</span>
         {% elif b.mounted %}<span class="pill on">live</span>
         {% else %}<span class="pill off">not mounted</span>{% endif %}
@@ -38,6 +46,14 @@ connector so their tools stay in separate lists.</p>
         <button type="button" class="test" data-slug="{{ b.slug }}">Test</button>
         {% if can_manage %}<button type="button" class="refresh" data-slug="{{ b.slug }}"
           title="Relaunch the server and re-read the tools it offers. A launched server resolves its package again on start, so this is what picks up a new release.">Update</button>{% endif %}
+        {% if b.pinnable %}
+        <div class="select-wrap" style="flex:0 1 190px">
+          <select class="version" data-slug="{{ b.slug }}" data-pinned="{{ b.pinned }}"
+                  aria-label="Version for this account">
+            <option value="">Loading versions&hellip;</option>
+          </select>
+        </div>
+        {% endif %}
         <span class="result" id="r-{{ b.slug }}"></span>
         {% if can_manage %}<form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
               data-confirm-title="Delete {{ b.title }}?"
@@ -106,5 +122,64 @@ wire("button.test", "/test", "Testing\u2026", "Test failed");
 // Relaunching can take a while: an unpinned package is resolved again, and a
 // new release has to be downloaded before the server will start.
 wire("button.refresh", "/refresh", "Relaunching and re-reading\u2026", "Update failed");
+
+// The version each account runs, which is theirs alone: picking one here does
+// not move anyone else, and the hub runs both if two accounts differ.
+document.querySelectorAll("select.version").forEach(async function (select) {
+  var slug = select.dataset.slug;
+  var out = document.getElementById("r-" + slug);
+
+  function option(value, label, selected) {
+    var o = document.createElement("option");
+    o.value = value; o.textContent = label; o.selected = selected;
+    return o;
+  }
+
+  try {
+    var res = await fetch("/backends/" + encodeURIComponent(slug) + "/versions");
+    var data = await res.json();
+    select.replaceChildren();
+    var pinned = data.pinned || "";
+    select.appendChild(option("", data.default
+      ? "Follow default (v" + data.default + ")" : "Follow default", !pinned));
+    (data.versions || []).forEach(function (v) {
+      select.appendChild(option(v.version, "v" + v.version + (v.latest ? " (latest)" : ""),
+                                v.version === pinned));
+    });
+    if (!data.versions || !data.versions.length) {
+      select.appendChild(option("", data.error || "No published versions found", true));
+      select.disabled = true;
+    }
+  } catch (err) {
+    select.replaceChildren(option("", "Could not load versions", true));
+    select.disabled = true;
+    return;
+  }
+
+  select.addEventListener("change", async function () {
+    var chosen = select.value;
+    select.disabled = true;
+    out.className = "result";
+    // A version nobody has run yet is launched and read before it is accepted,
+    // so this is not instant.
+    out.textContent = chosen ? "Checking v" + chosen + "\u2026" : "Clearing pin\u2026";
+    try {
+      var body = new URLSearchParams({ version: chosen });
+      var res = await fetch("/backends/" + encodeURIComponent(slug) + "/pin",
+                            { method: "POST", body: body });
+      var data = await res.json();
+      out.className = "result " + (data.ok ? "ok" : "bad");
+      out.textContent = data.detail;
+      if (!data.ok) select.value = select.dataset.pinned || "";
+      else select.dataset.pinned = chosen;
+    } catch (err) {
+      out.className = "result bad";
+      out.textContent = "Could not set the version: " + err;
+      select.value = select.dataset.pinned || "";
+    } finally {
+      select.disabled = false;
+    }
+  });
+});
 </script>
 {% endblock %}

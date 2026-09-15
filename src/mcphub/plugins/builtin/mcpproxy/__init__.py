@@ -48,6 +48,11 @@ ENV_PREFIX = "env_"
 CONNECTION_KEY = "connection"
 VERSION_KEY = "upstream_version"
 NAME_KEY = "upstream_name"
+PACKAGE_KEY = "registry_package"
+VERSION_CATALOGS_KEY = "version_catalogs"
+"""Per-version catalogues, keyed by version string. A pinned version can offer
+a different set of tools, and offering an account a tool its own version does
+not have would fail only when it tried to use it."""
 
 
 def _parse_env(raw: str) -> dict[str, str]:
@@ -327,6 +332,50 @@ class McpProxyPlugin(PluginDefaults):
             return CheckResult(False, f"{type(exc).__name__}: {exc}")
         finally:
             await upstream.close()
+
+    def variant(self, instance: BackendInstance, version: str) -> BackendInstance:
+        """This backend as it runs at `version`.
+
+        The command is rebuilt with the version pinned, and the catalogue is
+        swapped for the one read from that version. Nothing else about the
+        backend changes, so the plugin's own code never learns about versions.
+        """
+        if not version:
+            return instance
+
+        package = instance.config.get(PACKAGE_KEY) or {}
+        identifier = package.get("identifier")
+        if not identifier:
+            # Nothing reliable to pin: a hand-written command could be
+            # anything, and guessing which token is the package would
+            # eventually rewrite the wrong one.
+            log.warning("backend %s has no package reference; ignoring the pin to %s",
+                        instance.slug, version)
+            return instance
+
+        from ...base import BackendInstance as _Instance
+        from ....registry import PackageRef
+
+        ref = PackageRef(
+            registry_type=package.get("registryType", ""),
+            identifier=identifier,
+            runtime=package.get("runtime", ""),
+            args=tuple(package.get("args") or ()),
+        )
+        catalogs = instance.config.get(VERSION_CATALOGS_KEY) or {}
+        catalog = catalogs.get(version) or {}
+
+        config = {
+            **instance.config,
+            "command": ref.command(version),
+            CATALOG_KEY: catalog.get("tools") or "[]",
+            RESOURCE_CATALOG_KEY: catalog.get("resources") or "[]",
+            PROMPT_CATALOG_KEY: catalog.get("prompts") or "[]",
+            NAME_KEY: catalog.get("name") or instance.config.get(NAME_KEY, ""),
+            VERSION_KEY: version,
+        }
+        return _Instance(slug=instance.slug, title=instance.title, plugin_id=instance.plugin_id,
+                         config=config, secrets=instance.secrets)
 
     def tool_names(self, instance: BackendInstance) -> set[str]:
         """What this backend currently believes the upstream offers."""
