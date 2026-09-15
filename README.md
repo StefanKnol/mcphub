@@ -224,6 +224,24 @@ its settings page to review its tools and choose which to expose.
 
 Servers not in the registry are still added by hand, with a command or a URL.
 
+### Verified servers
+
+A result can carry a **✓ Verified** badge. It means a scheduled job actually
+launched that server through this hub and listed its tools — it is not a claim
+by the server's author, and a self-declared compatibility flag would be exactly
+the badge this exists to avoid.
+
+It says the server starts, completes an MCP handshake and reports its tools. It
+does **not** say every tool works, or that the server is safe to run. Everything
+without a badge is simply unchecked, not suspect.
+
+`src/mcphub/data/verified.json` holds the results and ships with the hub, so the
+badge reflects the build you are running. `.github/workflows/verify-servers.yml`
+re-runs the checks weekly and opens a pull request when what it observes
+changes; a server that quietly stops launching turns the build red rather than
+keeping its badge. The script self-tests its own harness first, so "everything
+failed" is distinguishable from "the harness is broken".
+
 ## Writing a plugin
 
 A plugin is any object with `id`, `name`, `description`, `fields`, `build()`

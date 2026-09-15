@@ -4,6 +4,9 @@
 <h1>Add from the MCP registry</h1>
 <p class="sub">Search the official registry. A published server declares how it is run
 and what settings it takes, so the form for it is generated rather than typed.</p>
+<p class="note" style="margin:-14px 0 20px">A <span class="pill on">&#10003; Verified</span> badge
+means a scheduled job actually launched that server through this hub and listed its tools —
+not that its author said it would work. Everything else is simply unchecked.</p>
 
 <form method="get" action="/registry" class="card" style="display:flex;gap:10px;align-items:center">
   <input type="search" name="q" value="{{ query }}" autofocus
@@ -28,8 +31,16 @@ and what settings it takes, so the form for it is generated rather than typed.</
         {% if s.version %}<span class="pill">v{{ s.version }}</span>{% endif %}
         {% if s.command %}<span class="pill">launched</span>{% else %}<span class="pill">remote</span>{% endif %}
         {% if s.env %}<span class="pill">{{ s.env|length }} setting{{ '' if s.env|length == 1 else 's' }}</span>{% endif %}
+        {% set v = s.verification %}
+        {% if v and v.ok %}
+          <span class="pill on" title="Launched here and its tools listed{% if v.last_verified %} on {{ v.last_verified }}{% endif %}. Not a statement that every tool works, or that the server is safe.">
+            &#10003; {{ v.summary }}{% if v.stale %} (stale){% endif %}</span>
+        {% endif %}
       </div>
       <p class="help" style="margin-top:4px">{{ s.description }}</p>
+      {% if s.verification and s.verification.ok and s.verification.note %}
+        <p class="note" style="margin:4px 0 0;color:var(--ok)">{{ s.verification.note }}</p>
+      {% endif %}
       <code class="url">{{ s.command or s.remote_url }}</code>
       <p class="note" style="margin-top:6px;font-size:12px">
         {{ s.name }}{% if s.repository %} — <a href="{{ s.repository }}" rel="noreferrer noopener" target="_blank">source</a>{% endif %}

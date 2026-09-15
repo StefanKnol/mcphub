@@ -27,6 +27,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcphub"]
 
+# The verified-server list ships with the hub so the badge works offline and
+# reflects the build you are running, not whatever a remote list says today.
+[tool.hatch.build.targets.wheel.force-include]
+"src/mcphub/data/verified.json" = "mcphub/data/verified.json"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

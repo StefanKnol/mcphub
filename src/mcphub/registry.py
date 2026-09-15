@@ -23,6 +23,8 @@ from typing import Any
 
 import anyio
 
+from .verified import Verification, lookup as lookup_verification
+
 log = logging.getLogger(__name__)
 
 REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers"
@@ -56,6 +58,16 @@ class RegistryServer:
     remote_url: str = ""
     """Set instead of `command` when the server is hosted rather than launched."""
     env: tuple[EnvVar, ...] = field(default_factory=tuple)
+
+    @property
+    def verification(self) -> Verification | None:
+        """What was observed when this server was last launched here, if ever.
+
+        Deliberately not read from the registry entry: a compatibility flag set
+        by the server's own author would be a claim, and the point of this is
+        that something measured it.
+        """
+        return lookup_verification(self.name)
 
     @property
     def slug_hint(self) -> str:
