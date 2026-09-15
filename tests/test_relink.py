@@ -74,3 +74,42 @@ def test_nothing_is_lost_in_the_move():
     recombined = {**moved, **dict(
         line.split("=", 1) for line in leftover.splitlines() if "=" in line)}
     assert recombined == {"A": "1", "B": "2", "C": "3"}
+
+
+# ── when a relink is attempted ────────────────────────────────────────────
+
+import json  # noqa: E402
+
+from mcphub.web.routes import LINK_ATTEMPTED_KEY, needs_relink  # noqa: E402
+
+
+def row(**config):
+    return {"slug": "s", "config_json": json.dumps(config)}
+
+
+def test_a_backend_with_a_command_and_no_metadata_needs_one():
+    assert needs_relink(row(command="uvx some-server"))
+
+
+def test_a_linked_backend_does_not():
+    assert not needs_relink(row(command="uvx x", registry_name="a/b",
+                                registry_package={"identifier": "x"}))
+
+
+def test_an_already_attempted_backend_is_not_retried():
+    """A command that is not in the registry must not be looked up on every
+    page load, forever."""
+    assert not needs_relink(row(command="uvx nowhere", **{LINK_ATTEMPTED_KEY: "2026-01-01"}))
+
+
+def test_a_backend_with_no_command_has_nothing_to_look_up():
+    assert not needs_relink(row(url="http://x/mcp"))
+
+
+def test_a_corrupt_row_is_skipped_rather_than_raising():
+    assert not needs_relink({"slug": "s", "config_json": "{not json"})
+
+
+def test_half_linked_counts_as_unlinked():
+    """A name without a package reference cannot produce a pinnable backend."""
+    assert needs_relink(row(command="uvx x", registry_name="a/b"))

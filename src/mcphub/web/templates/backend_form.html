@@ -23,6 +23,20 @@
     </div>
   </div>
 
+  {% if pinnable %}
+  <div class="field">
+    <label for="version-select">Version for your account</label>
+    <div class="select-wrap">
+      <select id="version-select" class="version" data-slug="{{ slug }}" data-pinned="">
+        <option value="">Loading versions&hellip;</option>
+      </select>
+    </div>
+    <p class="help">Yours alone — other accounts keep whatever they chose, and the hub runs
+      both. A version is started and read the first time it is picked, so this is not instant.</p>
+    <p class="result" id="r-{{ slug }}" style="margin:5px 0 0"></p>
+  </div>
+  {% endif %}
+
   {% for item in fields %}
   <div class="field"
        {% if item.field.show_if %}data-show-if-field="{{ item.field.show_if[0] }}"
@@ -142,6 +156,56 @@ document.querySelectorAll(".picker").forEach(function (picker) {
     picker.querySelectorAll(".pick").forEach(function (row) {
       row.hidden = q !== "" && row.dataset.label.toLowerCase().indexOf(q) === -1;
     });
+  });
+});
+
+document.querySelectorAll("select.version").forEach(async function (select) {
+  var slug = select.dataset.slug;
+  var out = document.getElementById("r-" + slug);
+  function option(value, label, selected) {
+    var o = document.createElement("option");
+    o.value = value; o.textContent = label; o.selected = selected;
+    return o;
+  }
+  try {
+    var data = await (await fetch("/backends/" + encodeURIComponent(slug) + "/versions")).json();
+    select.replaceChildren();
+    var pinned = data.pinned || "";
+    select.dataset.pinned = pinned;
+    select.appendChild(option("", data.default
+      ? "Follow default (v" + data.default + ")" : "Follow default", !pinned));
+    (data.versions || []).forEach(function (v) {
+      select.appendChild(option(v.version, "v" + v.version + (v.latest ? " (latest)" : ""),
+                                v.version === pinned));
+    });
+    if (!data.versions || !data.versions.length) {
+      select.replaceChildren(option("", data.error || "No published versions found", true));
+      select.disabled = true;
+    }
+  } catch (err) {
+    select.replaceChildren(option("", "Could not load versions", true));
+    select.disabled = true;
+    return;
+  }
+  select.addEventListener("change", async function () {
+    var chosen = select.value;
+    select.disabled = true;
+    out.className = "result";
+    out.textContent = chosen ? "Checking v" + chosen + "\u2026" : "Clearing pin\u2026";
+    try {
+      var data = await (await fetch("/backends/" + encodeURIComponent(slug) + "/pin",
+        { method: "POST", body: new URLSearchParams({ version: chosen }) })).json();
+      out.className = "result " + (data.ok ? "ok" : "bad");
+      out.textContent = data.detail;
+      if (!data.ok) select.value = select.dataset.pinned || "";
+      else select.dataset.pinned = chosen;
+    } catch (err) {
+      out.className = "result bad";
+      out.textContent = "Could not set the version: " + err;
+      select.value = select.dataset.pinned || "";
+    } finally {
+      select.disabled = false;
+    }
   });
 });
 </script>

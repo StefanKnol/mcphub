@@ -91,6 +91,50 @@ def _split_env_blob(blob: str, declared: list[str]) -> tuple[dict[str, str], str
     return wanted, leftover
 
 
+LINK_ATTEMPTED_KEY = "registry_link_attempted_at"
+
+
+async def relink_and_save(hub: Any, row: Any) -> bool:
+    """Relink one backend and persist it. Returns True if anything changed.
+
+    Records the attempt either way, so a backend whose command is not in the
+    registry is not looked up again on every page load.
+    """
+    recovered = await relink_registry(hub, row)
+    instance = hub.instance_from_row(row)
+    config = {**json.loads(row["config_json"]), LINK_ATTEMPTED_KEY: utcnow()}
+    secrets = dict(instance.secrets)
+
+    if recovered:
+        config.update(recovered)
+        declared = [v["name"] for v in recovered.get("registry_env") or []]
+        moved, leftover = _split_env_blob(str(secrets.get("env") or ""), declared)
+        for name, value in moved.items():
+            secrets.setdefault(f"env_{name}", value)
+        if moved:
+            secrets["env"] = leftover
+            if not leftover:
+                secrets.pop("env", None)
+            log.info("backend %s: moved %d variable(s) into their own fields",
+                     row["slug"], len(moved))
+
+    _save_backend(hub, slug=row["slug"], plugin_id=row["plugin_id"], title=row["title"],
+                  enabled=bool(row["enabled"]), config=config, secrets=secrets, row=row)
+    return bool(recovered)
+
+
+def needs_relink(row: Any) -> bool:
+    try:
+        config = json.loads(row["config_json"])
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if config.get("registry_name") and config.get("registry_package"):
+        return False
+    if config.get(LINK_ATTEMPTED_KEY):
+        return False
+    return bool(str(config.get("command") or "").strip())
+
+
 async def relink_registry(hub: Any, row: Any) -> dict[str, Any] | None:
     """Re-attach a backend to the registry entry its command launches.
 
@@ -297,6 +341,19 @@ def build(hub: Any) -> list[Route]:
         if not require_user(request):
             return redirect_to_login(request)
         user = current_user(hub.db, request)
+
+        # Heal here too, not only on the settings page. This is the page where
+        # a missing version selector would be noticed, and it was the page that
+        # could never produce one. Attempted once per backend, so a command
+        # that is not in the registry is not looked up on every load.
+        if may_manage_backends(user):
+            for candidate in hub.backend_rows():
+                if needs_relink(candidate):
+                    try:
+                        await relink_and_save(hub, candidate)
+                    except Exception:  # noqa: BLE001 - the page still renders
+                        log.exception("relink failed for %s", candidate["slug"])
+
         mounted = {m.slug for m in hub.mounts.active()} if hub.mounts else set()
         visible = None if is_admin(user) else granted_backends(user["id"])
         backends = [
@@ -422,31 +479,20 @@ def build(hub: Any) -> list[Route]:
         # alternative is a form that asks for a freeform blob forever, for a
         # server that publishes exactly what it needs.
         if row is not None and request.method == "GET":
-            recovered = await relink_registry(hub, row)
-            if recovered:
-                config = {**json.loads(row["config_json"]), **recovered}
-                secrets = dict(instance.secrets) if instance else {}
-
-                declared = [v["name"] for v in recovered.get("registry_env") or []]
-                moved, leftover = _split_env_blob(str(secrets.get("env") or ""), declared)
-                for name, value in moved.items():
-                    secrets.setdefault(f"env_{name}", value)
-                if moved:
-                    secrets["env"] = leftover
-                    if not leftover:
-                        secrets.pop("env", None)
-                    log.info("backend %s: moved %d variable(s) into their own fields",
-                             row["slug"], len(moved))
-
-                _save_backend(hub, slug=row["slug"], plugin_id=row["plugin_id"],
-                              title=row["title"], enabled=bool(row["enabled"]),
-                              config=config, secrets=secrets, row=row)
+            if needs_relink(row) or not json.loads(row["config_json"]).get("registry_name"):
+                try:
+                    await relink_and_save(hub, row)
+                except Exception:  # noqa: BLE001 - the form still renders
+                    log.exception("relink failed for %s", row["slug"])
                 row = hub.backend_row(row["slug"])
                 instance = hub.instance_from_row(row)
 
         if request.method == "GET":
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[],
+                          pinnable=bool(row and instance
+                                        and instance.config.get("registry_name")
+                                        and instance.config.get("registry_package")),
                           slug=slug or "", title=row["title"] if row else "",
                           # A plugin whose tool surface comes from elsewhere starts
                           # disabled, so its tools are reviewed before they attach.
@@ -477,6 +523,9 @@ def build(hub: Any) -> list[Route]:
         if errors:
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=errors,
+                          pinnable=bool(row and instance
+                                        and instance.config.get("registry_name")
+                                        and instance.config.get("registry_package")),
                           slug=new_slug, title=title, enabled=enabled, status_code=400)
 
         # Give the plugin a chance to cache what it discovered (an upstream tool
