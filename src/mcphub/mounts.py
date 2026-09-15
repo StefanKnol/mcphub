@@ -16,6 +16,7 @@ is entered when it goes up and closed when it comes down.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -61,10 +62,11 @@ class Mounted:
 class MountManager:
     """Owns the live set of backend endpoints and keeps the router in sync."""
 
-    def __init__(self, app: Any, provider: HubOAuthProvider, settings: Any) -> None:
+    def __init__(self, app: Any, provider: HubOAuthProvider, settings: Any, db: Any = None) -> None:
         self._app = app
         self._provider = provider
         self._settings = settings
+        self._db = db
         self._public_url = settings.public_url.rstrip("/")
         self._verifier = ProviderTokenVerifier(provider)
         self._mounted: dict[str, Mounted] = {}
@@ -135,9 +137,12 @@ class MountManager:
         #
         # `resource_server_url` is what pins a token to *this* backend: a token
         # minted for another backend on the same hub is refused, not honoured.
+        # Order outward: authenticate, require a token with the right scope,
+        # then check this particular account may use this particular backend.
+        authorized = _Authorized(sub_app, self._db, instance.slug) if self._db is not None else sub_app
         guarded = AuthenticationMiddleware(
             RequireAuthMiddleware(
-                sub_app,
+                authorized,
                 required_scopes=[SCOPE_USE],
                 resource_metadata_url=build_resource_metadata_url(AnyHttpUrl(resource_url)),
             ),
@@ -210,6 +215,56 @@ class MountManager:
         for route in routes:
             if route in table:
                 table.remove(route)
+
+
+class _Authorized:
+    """Refuse a request from an account without a grant for this backend.
+
+    Checked per request rather than when the token was issued, so removing an
+    account's access takes effect at once instead of whenever its token happens
+    to expire. A token proves who is asking; this decides whether they may.
+    """
+
+    def __init__(self, app: ASGIApp, db: Any, slug: str) -> None:
+        self._app = app
+        self._db = db
+        self._slug = slug
+
+    def _permitted(self, username: str | None) -> bool:
+        if not username:
+            return False
+        row = self._db.one(
+            "SELECT u.is_admin, "
+            "       (SELECT COUNT(*) FROM backend_grants g JOIN backends b ON b.id = g.backend_id "
+            "        WHERE g.user_id = u.id AND b.slug = ?) AS granted "
+            "FROM users u WHERE u.username = ?",
+            (self._slug, username),
+        )
+        if row is None:
+            # The account was deleted while a token of theirs was still valid.
+            return False
+        return bool(row["is_admin"]) or bool(row["granted"])
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        user = scope.get("user")
+        token = getattr(user, "access_token", None)
+        username = getattr(token, "subject", None)
+        if not self._permitted(username):
+            log.warning("account %r has no grant for backend %s", username, self._slug)
+            await _forbidden(send, self._slug)
+            return
+        await self._app(scope, receive, send)
+
+
+async def _forbidden(send: Send, slug: str) -> None:
+    body = json.dumps({
+        "error": "access_denied",
+        "error_description": f"This account has not been granted access to the {slug!r} backend.",
+    }).encode()
+    await send({"type": "http.response.start", "status": 403,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
 
 
 class _AtRoot:

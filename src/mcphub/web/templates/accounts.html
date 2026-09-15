@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Accounts — mcphub{% endblock %}
+{% block body %}
+<h1>Accounts</h1>
+<p class="sub">Backends are shared: configured once, then granted out. An account reaches
+only what it has been granted, checked on every request rather than when it signed in.</p>
+
+{% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+
+{% for a in accounts %}
+<div class="card">
+  <form class="validated" method="post" action="/accounts/{{ a.id }}">
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:12px">
+      <strong>{{ a.username }}</strong>
+      {% if a.is_admin %}<span class="pill on">administrator</span>{% endif %}
+      {% if a.is_you %}<span class="pill">you</span>{% endif %}
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <div class="checkline">
+          <input type="checkbox" id="admin-{{ a.id }}" name="is_admin" {% if a.is_admin %}checked{% endif %}>
+          <label for="admin-{{ a.id }}">Administrator</label>
+        </div>
+        <p class="help">Manages accounts, and reaches every backend without a grant.</p>
+      </div>
+      <div class="field">
+        <div class="checkline">
+          <input type="checkbox" id="add-{{ a.id }}" name="can_add_backends" {% if a.can_add %}checked{% endif %}>
+          <label for="add-{{ a.id }}">May configure backends</label>
+        </div>
+        <p class="help">Add, edit and remove backends. Those are shared, so this affects everyone granted them.</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Backends this account may use</label>
+      {% if a.is_admin %}
+        <p class="help">An administrator reaches every backend; individual grants do not apply.</p>
+      {% elif backends %}
+        <div class="picker">
+          {% for b in backends %}
+          <div class="pick">
+            <input type="checkbox" id="g-{{ a.id }}-{{ b.slug }}" name="grant" value="{{ b.slug }}"
+                   {% if b.slug in a.grants %}checked{% endif %}>
+            <label for="g-{{ a.id }}-{{ b.slug }}">
+              <span class="mono">{{ b.slug }}</span><span class="note"> — {{ b.title }}</span>
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="help">No backends exist yet.</p>
+      {% endif %}
+    </div>
+
+    <div class="actions">
+      <button class="primary" type="submit">Save</button>
+    </div>
+  </form>
+
+  {% if not a.is_you %}
+  <form method="post" action="/accounts/{{ a.id }}/delete" style="margin-top:10px"
+        data-confirm-title="Delete {{ a.username }}?"
+        data-confirm="Their connectors stop working immediately: tokens, sessions and grants are all removed. This cannot be undone."
+        data-confirm-action="Delete" data-confirm>
+    <button class="danger" type="submit">Delete account</button>
+  </form>
+  {% endif %}
+</div>
+{% endfor %}
+
+<h2>Add an account</h2>
+<div class="card">
+  <form class="validated" method="post" action="/accounts/new">
+    <div class="row">
+      <div class="field">
+        <label for="new-username">Username</label>
+        <input id="new-username" type="text" name="username" autocomplete="off"
+               pattern="[a-z0-9][a-z0-9._\-]{1,30}" required>
+        <p class="help">Lowercase letters, digits, dot, dash or underscore.</p>
+      </div>
+      <div class="field">
+        <label for="new-password">Password</label>
+        <input id="new-password" type="password" name="password" autocomplete="new-password"
+               minlength="12" required>
+        <p class="help">At least 12 characters. They can change it once signed in.</p>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><div class="checkline">
+        <input type="checkbox" id="new-admin" name="is_admin">
+        <label for="new-admin">Administrator</label></div></div>
+      <div class="field"><div class="checkline">
+        <input type="checkbox" id="new-add" name="can_add_backends">
+        <label for="new-add">May configure backends</label></div></div>
+    </div>
+    <p class="note">Created with no backend grants. Grant them above once it exists.</p>
+    <div class="actions"><button class="primary" type="submit">Create account</button></div>
+  </form>
+</div>
+{% endblock %}

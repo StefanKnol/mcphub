@@ -7,12 +7,22 @@ connector so their tools stay in separate lists.</p>
 
 {% if not backends %}
   <div class="card"><p style="margin:0 0 12px">No backends yet.</p>
-  <p class="note" style="margin:0 0 14px">Add one below to get an MCP endpoint you can connect to.</p></div>
+  <p class="note" style="margin:0 0 14px">{% if can_manage %}Add one below to get an MCP endpoint you can
+    connect to.{% else %}This account has not been granted access to any backend. An administrator can
+    grant one.{% endif %}</p></div>
 {% endif %}
 
+<div class="grid">
 {% for b in backends %}
 <div class="card">
   <div class="backend">
+    {% if b.icon %}
+      <img class="logo" src="{{ b.icon }}" alt="" loading="lazy"
+           onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'logo monogram',textContent:this.dataset.initials}))"
+           data-initials="{{ b.initials }}">
+    {% else %}
+      <div class="logo monogram">{{ b.initials }}</div>
+    {% endif %}
     <div class="meta">
       <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
         <strong>{{ b.title }}</strong>
@@ -23,22 +33,24 @@ connector so their tools stay in separate lists.</p>
       </div>
       {% if b.enabled %}<code class="url">{{ b.url }}</code>{% endif %}
       <div class="actions">
-        <a class="btn" href="/backends/{{ b.slug }}">Settings</a>
+        {% if can_manage %}<a class="btn" href="/backends/{{ b.slug }}">Settings</a>{% endif %}
         <button type="button" class="test" data-slug="{{ b.slug }}">Test connection</button>
         <span class="result" id="r-{{ b.slug }}"></span>
-        <form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
+        {% if can_manage %}<form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
               data-confirm-title="Delete {{ b.title }}?"
               data-confirm="Its endpoint stops working immediately and its stored credentials are erased. This cannot be undone."
               data-confirm-action="Delete"
               data-confirm>
           <button class="danger" type="submit">Delete</button>
-        </form>
+        </form>{% endif %}
       </div>
     </div>
   </div>
 </div>
 {% endfor %}
+</div>
 
+{% if can_manage %}
 <h2>Add a backend</h2>
 <div class="card" style="display:flex;gap:12px;align-items:center">
   <div style="flex:1">
@@ -62,6 +74,7 @@ connector so their tools stay in separate lists.</p>
     an <code>mcphub.plugins</code> entry point and restart.</p>
   {% endfor %}
 </div>
+{% endif %}
 
 <script>
 document.querySelectorAll("button.test").forEach(function (btn) {

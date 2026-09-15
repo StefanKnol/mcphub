@@ -99,7 +99,8 @@ class Hub:
             return None
         password = secrets.token_urlsafe(18)
         self.db.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, password_hash, is_admin, can_add_backends, created_at) "
+            "VALUES (?, ?, 1, 1, ?)",
             ("admin", hash_password(password), utcnow()),
         )
         return password
@@ -120,7 +121,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
                 "=" * 68, password, settings.public_url, "=" * 68,
             )
 
-        hub.mounts = MountManager(app, hub.provider, settings)
+        hub.mounts = MountManager(app, hub.provider, settings, hub.db)
         for row in hub.backend_rows(enabled_only=True):
             error = await hub.remount(row["slug"])
             if error:

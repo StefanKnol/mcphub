@@ -16,6 +16,14 @@
       <input id="u" type="text" name="username" autocomplete="username" autofocus required></div>
     <div class="field"><label for="p">Password</label>
       <input id="p" type="password" name="password" autocomplete="current-password" required></div>
+    <div class="field">
+      <div class="checkline">
+        <input type="checkbox" id="remember" name="remember" value="1">
+        <label for="remember">Stay signed in on this device</label>
+      </div>
+      <p class="help">Keeps this browser signed in for 30 days instead of 12 hours.
+        Signing out ends it immediately, here and on the server.</p>
+    </div>
     <button class="primary" type="submit" style="width:100%">
       {% if client_name %}Sign in and authorize{% else %}Sign in{% endif %}</button>
   </form>

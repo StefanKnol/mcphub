@@ -19,10 +19,22 @@ import anyio
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at    TEXT NOT NULL
+    id               INTEGER PRIMARY KEY,
+    username         TEXT NOT NULL UNIQUE,
+    password_hash    TEXT NOT NULL,
+    is_admin         INTEGER NOT NULL DEFAULT 0,
+    can_add_backends INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL
+);
+
+-- Which accounts may reach which backends. Backends are shared: configured
+-- once, granted out. An admin needs no row here — they reach everything, and
+-- writing that as data would let a mistake lock everyone out of their own hub.
+CREATE TABLE IF NOT EXISTS backend_grants (
+    user_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    backend_id INTEGER NOT NULL REFERENCES backends (id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, backend_id)
 );
 
 -- One row per *backend instance*, not per plugin: two MikroTik routers are two
@@ -86,7 +98,17 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_tokens_client ON tokens (client_id);
 CREATE INDEX IF NOT EXISTS idx_backends_slug ON backends (slug);
+CREATE INDEX IF NOT EXISTS idx_grants_user ON backend_grants (user_id);
 """
+
+# `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so columns added
+# later never appear on a database that predates them. Each entry runs only if
+# its column is missing.
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("users", "is_admin", "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"),
+    ("users", "can_add_backends",
+     "ALTER TABLE users ADD COLUMN can_add_backends INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 def utcnow() -> str:
@@ -107,8 +129,24 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        for table, column, statement in MIGRATIONS:
+            existing = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self._conn.execute(statement)
+
+        # A hub that predates accounts has exactly one user, who has been
+        # administering it all along. Leaving them non-admin would lock them
+        # out of the settings they already owned.
+        row = self._conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        if row and row[0] == 1:
+            self._conn.execute(
+                "UPDATE users SET is_admin = 1, can_add_backends = 1 WHERE is_admin = 0"
+            )
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:

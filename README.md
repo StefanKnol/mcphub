@@ -103,6 +103,27 @@ about ownership. Pass `--user` to skip it and manage the ownership yourself.
 Then point a proxy host at it with a real certificate. The first-run admin
 password is printed once, in the container log.
 
+### Accounts
+
+The first run creates one administrator. Further accounts are added under
+**Accounts**, each carrying two toggles and a set of grants:
+
+| | |
+| --- | --- |
+| Administrator | Manages accounts, and reaches every backend without a grant. |
+| May configure backends | Add, edit and remove backends. They are shared, so this affects everyone granted them. |
+| Grants | Which backends this account may use. |
+
+Backends are shared rather than per-account: configured once, then granted out,
+so a router's password lives in one place and there is one page showing who can
+reach it.
+
+The grant is checked **on every request**, not when the token was issued, so
+removing access cuts off an existing connector at once rather than whenever its
+token happens to expire. Authorising a connector for a backend an account has
+not been granted is refused at sign-in, with the reason, instead of succeeding
+and then failing on use.
+
 ### Configuration
 
 Only these are environment variables. Everything else lives in the database.

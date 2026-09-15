@@ -58,6 +58,7 @@ class RegistryServer:
     remote_url: str = ""
     """Set instead of `command` when the server is hosted rather than launched."""
     env: tuple[EnvVar, ...] = field(default_factory=tuple)
+    icons: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     @property
     def verification(self) -> Verification | None:
@@ -129,6 +130,8 @@ def _parse(entry: dict[str, Any]) -> RegistryServer | None:
                 remote_url = remote["url"]
                 break
 
+    icons = tuple(i for i in (server.get("icons") or []) if isinstance(i, dict) and i.get("src"))
+
     return RegistryServer(
         name=name,
         title=server.get("title") or name.rsplit("/", 1)[-1],
@@ -138,6 +141,7 @@ def _parse(entry: dict[str, Any]) -> RegistryServer | None:
         command=command,
         remote_url=remote_url,
         env=env,
+        icons=icons,
     )
 
 

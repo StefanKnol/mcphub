@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any
 
 from starlette.requests import Request
@@ -32,8 +33,49 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 # Reserved because a backend mounted at one of these would shadow the hub's
 # own routes and, in the case of the OAuth endpoints, break authentication
 # for every other backend at the same time.
-RESERVED_SLUGS = {"login", "logout", "account", "backends", "healthz", "mcp", "authorize",
-                  "token", "register", "registry", "revoke"}
+RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp",
+                  "authorize", "token", "register", "registry", "revoke"}
+
+
+def _initials(title: str) -> str:
+    """Up to two letters, for a backend with no logo to show."""
+    words = [w for w in re.split(r"[\s._-]+", title or "") if w and w[0].isalnum()]
+    if not words:
+        return "?"
+    if len(words) == 1:
+        return words[0][:2].upper()
+    return (words[0][0] + words[1][0]).upper()
+
+
+def _backend_icon(row: Any) -> str | None:
+    """A logo for the card, from the registry entry this backend came from.
+
+    Only entries added from the registry have one, and only some of those
+    publish icons, so this is genuinely optional and the template falls back
+    to a monogram rather than a placeholder repeated down the page.
+    """
+    try:
+        config = json.loads(row["config_json"])
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return None
+    icons = config.get("registry_icons") or []
+    if isinstance(icons, list) and icons:
+        first = icons[0]
+        src = first.get("src") if isinstance(first, dict) else first
+        # Remote images only; a data: or javascript: URL from a third-party
+        # listing has no business being rendered in the admin page.
+        if isinstance(src, str) and src.startswith(("https://", "http://")):
+            return src
+    return None
+
+
+def _resource_slug(resource: str | None) -> str | None:
+    """The backend a token is being requested for, from its RFC 8707 resource."""
+    if not resource:
+        return None
+    path = urlparse(str(resource)).path.rstrip("/")
+    marker = "/mcp/"
+    return path[path.rindex(marker) + len(marker):] if marker in path else None
 
 
 def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: bool,
@@ -55,14 +97,57 @@ def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: b
 
 def build(hub: Any) -> list[Route]:
     def render(request: Request, template: str, status_code: int = 200, **context: Any) -> Response:
+        signed_in = current_user(hub.db, request)
+        row = hub.db.one("SELECT is_admin FROM users WHERE id = ?", (signed_in["id"],)) if signed_in else None
         return TEMPLATES.TemplateResponse(
             request, template,
-            {"user": current_user(hub.db, request), "public_url": hub.settings.public_url, **context},
+            {
+                "user": signed_in,
+                "public_url": hub.settings.public_url,
+                # Every page's navigation needs it, so it is part of the base
+                # context rather than something each handler remembers to pass.
+                "is_admin": bool(row and row["is_admin"]),
+                **context,
+            },
             status_code=status_code,
         )
 
     def require_user(request: Request) -> dict[str, Any] | None:
         return current_user(hub.db, request)  # type: ignore[return-value]
+
+    def account_row(user: dict[str, Any] | None) -> Any:
+        """Named distinctly from the `account` route handler below.
+
+        Both lived in this scope as `account`, and the handler defined later
+        won, so the permission checks were calling a coroutine and every
+        backend page returned a 500.
+        """
+        return hub.db.one("SELECT * FROM users WHERE id = ?", (user["id"],)) if user else None
+
+    def may_manage_backends(user: dict[str, Any] | None) -> bool:
+        """Backends are shared, so configuring one affects everyone granted it.
+
+        Admins always may; `can_add_backends` promotes an ordinary account to
+        the same, which is the trust this toggle represents. What it does not
+        grant is managing other accounts.
+        """
+        row = account_row(user)
+        return bool(row and (row["is_admin"] or row["can_add_backends"]))
+
+    def is_admin(user: dict[str, Any] | None) -> bool:
+        row = account_row(user)
+        return bool(row and row["is_admin"])
+
+    def granted_backends(user_id: int) -> set[str]:
+        return {r["slug"] for r in hub.db.query(
+            "SELECT b.slug FROM backend_grants g JOIN backends b ON b.id = g.backend_id "
+            "WHERE g.user_id = ?", (user_id,))}
+
+    def may_use(user: dict[str, Any], slug: str) -> bool:
+        return is_admin(user) or slug in granted_backends(user["id"])
+
+    def denied(request: Request, message: str) -> Response:
+        return render(request, "error.html", message=message, status_code=403)
 
     def redirect_to_login(request: Request) -> Response:
         return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
@@ -101,6 +186,7 @@ def build(hub: Any) -> list[Route]:
         form = await request.form()
         username = str(form.get("username", "")).strip()
         password = str(form.get("password", ""))
+        remember = form.get("remember") is not None
         user_id = hub.provider.authenticate_user(username, password)
         if user_id is None:
             return render(request, "login.html", error="Incorrect username or password.",
@@ -108,13 +194,25 @@ def build(hub: Any) -> list[Route]:
                           client_name=client_name, status_code=401)
 
         if auth_request:
+            # Refuse here rather than minting a token that every MCP request
+            # would then reject: a connector that appears to authorise and then
+            # fails on use is a much worse thing to debug than a refusal now.
+            wanted = _resource_slug(pending.params.resource if pending else None)
+            if wanted and not may_use({"id": user_id}, wanted):
+                return render(request, "login.html", error=(
+                    f"This account has not been granted access to the {wanted!r} backend. "
+                    "Ask an administrator to grant it, then connect again."
+                ), auth_request=None, next_url="/", client_name=client_name, status_code=403)
+
             redirect_url = hub.provider.complete_authorization(auth_request, user_id)
             response = RedirectResponse(redirect_url, status_code=303)
-            start_session(hub.db, response, user_id, secure=hub.settings.public_url.startswith("https"))
+            start_session(hub.db, response, user_id, remember=remember,
+                          secure=hub.settings.public_url.startswith("https"))
             return response
 
         response = RedirectResponse(next_url if next_url.startswith("/") else "/", status_code=303)
-        start_session(hub.db, response, user_id, secure=hub.settings.public_url.startswith("https"))
+        start_session(hub.db, response, user_id, remember=remember,
+                      secure=hub.settings.public_url.startswith("https"))
         return response
 
     async def logout(request: Request) -> Response:
@@ -127,7 +225,9 @@ def build(hub: Any) -> list[Route]:
     async def dashboard(request: Request) -> Response:
         if not require_user(request):
             return redirect_to_login(request)
+        user = current_user(hub.db, request)
         mounted = {m.slug for m in hub.mounts.active()} if hub.mounts else set()
+        visible = None if is_admin(user) else granted_backends(user["id"])
         backends = [
             {
                 "slug": row["slug"],
@@ -138,10 +238,15 @@ def build(hub: Any) -> list[Route]:
                 "mounted": row["slug"] in mounted,
                 "url": f"{hub.settings.public_url}/mcp/{row['slug']}",
                 "updated_at": row["updated_at"],
+                "icon": _backend_icon(row),
+                "initials": _initials(row["title"]),
             }
             for row in hub.backend_rows()
+            if visible is None or row["slug"] in visible
         ]
-        return render(request, "dashboard.html", backends=backends, plugins=hub.registry.all())
+        return render(request, "dashboard.html", backends=backends,
+                      plugins=hub.registry.all() if may_manage_backends(user) else [],
+                      can_manage=may_manage_backends(user), is_admin=is_admin(user))
 
     # ── backend create / edit ─────────────────────────────────────────────
 
@@ -208,8 +313,11 @@ def build(hub: Any) -> list[Route]:
         return config, secret, errors
 
     async def backend_form(request: Request) -> Response:
-        if not require_user(request):
+        user = require_user(request)
+        if not user:
             return redirect_to_login(request)
+        if not may_manage_backends(user):
+            return denied(request, "This account cannot configure backends.")
 
         slug = request.path_params.get("slug")
         row = hub.backend_row(slug) if slug else None
@@ -285,8 +393,11 @@ def build(hub: Any) -> list[Route]:
 
     async def backend_test(request: Request) -> Response:
         """Live connectivity check, called by the Test button."""
-        if not require_user(request):
+        user = require_user(request)
+        if not user:
             return JSONResponse({"ok": False, "detail": "Not signed in."}, status_code=401)
+        if not may_use(user, request.path_params["slug"]):
+            return JSONResponse({"ok": False, "detail": "No access to this backend."}, status_code=403)
         row = hub.backend_row(request.path_params["slug"])
         if row is None:
             return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
@@ -297,8 +408,11 @@ def build(hub: Any) -> list[Route]:
         return JSONResponse({"ok": result.ok, "detail": result.detail})
 
     async def backend_delete(request: Request) -> Response:
-        if not require_user(request):
+        user = require_user(request)
+        if not user:
             return redirect_to_login(request)
+        if not may_manage_backends(user):
+            return denied(request, "This account cannot configure backends.")
         slug = request.path_params["slug"]
         await hub.mounts.unmount(slug)
         hub.db.execute("DELETE FROM backends WHERE slug = ?", (slug,))
@@ -332,8 +446,11 @@ def build(hub: Any) -> list[Route]:
     # ── registry ──────────────────────────────────────────────────────────
 
     async def registry_search(request: Request) -> Response:
-        if not require_user(request):
+        user = require_user(request)
+        if not user:
             return redirect_to_login(request)
+        if not may_manage_backends(user):
+            return denied(request, "This account cannot add backends.")
         query = request.query_params.get("q", "").strip()
         results, error = [], None
         if query:
@@ -344,8 +461,11 @@ def build(hub: Any) -> list[Route]:
         return render(request, "registry.html", query=query, results=results, error=error)
 
     async def registry_add(request: Request) -> Response:
-        if not require_user(request):
+        user = require_user(request)
+        if not user:
             return redirect_to_login(request)
+        if not may_manage_backends(user):
+            return denied(request, "This account cannot add backends.")
         name = request.query_params.get("name", "") or (
             str((await request.form()).get("registry_name", "")) if request.method == "POST" else ""
         )
@@ -392,6 +512,8 @@ def build(hub: Any) -> list[Route]:
         # Keep the declaration, not just the values. It is what lets the settings
         # page go on naming these variables and describing them, instead of
         # collapsing to a freeform blob the moment the backend exists.
+        if server.icons:
+            config["registry_icons"] = list(server.icons)
         config["registry_env"] = [
             {"name": v.name, "description": v.description,
              "isRequired": v.required, "isSecret": v.secret}
@@ -415,8 +537,121 @@ def build(hub: Any) -> list[Route]:
                       config=config, secrets=secrets)
         return RedirectResponse(f"/backends/{slug}", status_code=303)
 
+    # ── accounts ──────────────────────────────────────────────────────────
+
+    async def accounts(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        rows = hub.db.query("SELECT * FROM users ORDER BY username")
+        backends = hub.backend_rows()
+        listing = [{
+            "id": r["id"], "username": r["username"],
+            "is_admin": bool(r["is_admin"]), "can_add": bool(r["can_add_backends"]),
+            "is_you": r["id"] == user["id"],
+            "grants": sorted(granted_backends(r["id"])),
+        } for r in rows]
+        return render(request, "accounts.html", accounts=listing, backends=backends,
+                      errors=request.query_params.getlist("error"))
+
+    async def account_create(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        form = await request.form()
+        username = str(form.get("username", "")).strip().lower()
+        password = str(form.get("password", ""))
+
+        if not re.match(r"^[a-z0-9][a-z0-9._-]{1,30}$", username):
+            return RedirectResponse("/accounts?error=Username+must+be+2-31+characters%2C+"
+                                    "letters+digits+dot+dash+underscore.", status_code=303)
+        if len(password) < 12:
+            return RedirectResponse("/accounts?error=Password+must+be+at+least+12+characters.",
+                                    status_code=303)
+        if hub.db.one("SELECT id FROM users WHERE username = ?", (username,)):
+            return RedirectResponse(f"/accounts?error=An+account+named+{username}+already+exists.",
+                                    status_code=303)
+
+        hub.db.execute(
+            "INSERT INTO users (username, password_hash, is_admin, can_add_backends, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (username, hash_password(password), int(form.get("is_admin") is not None),
+             int(form.get("can_add_backends") is not None), utcnow()),
+        )
+        log.info("account %r created by %r", username, user["username"])
+        return RedirectResponse("/accounts", status_code=303)
+
+    async def account_update(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        target = hub.db.one("SELECT * FROM users WHERE id = ?", (request.path_params["user_id"],))
+        if target is None:
+            return render(request, "error.html", message="No such account.", status_code=404)
+
+        form = await request.form()
+        wants_admin = form.get("is_admin") is not None
+
+        # Removing your own admin rights, as the only admin, would leave a hub
+        # nobody can administer and no way back in.
+        if target["id"] == user["id"] and not wants_admin:
+            others = hub.db.one("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND id != ?",
+                                (user["id"],))
+            if not others or not others["n"]:
+                return RedirectResponse(
+                    "/accounts?error=You+are+the+only+administrator%3B+promote+someone+else+first.",
+                    status_code=303)
+
+        hub.db.execute("UPDATE users SET is_admin = ?, can_add_backends = ? WHERE id = ?",
+                       (int(wants_admin), int(form.get("can_add_backends") is not None), target["id"]))
+
+        wanted = {str(v) for v in form.getlist("grant")}
+        hub.db.execute("DELETE FROM backend_grants WHERE user_id = ?", (target["id"],))
+        for row in hub.backend_rows():
+            if row["slug"] in wanted:
+                hub.db.execute(
+                    "INSERT INTO backend_grants (user_id, backend_id, created_at) VALUES (?, ?, ?)",
+                    (target["id"], row["id"], utcnow()))
+        log.info("account %r updated by %r; grants now %s",
+                 target["username"], user["username"], sorted(wanted))
+        return RedirectResponse("/accounts", status_code=303)
+
+    async def account_delete(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        target_id = int(request.path_params["user_id"])
+        if target_id == user["id"]:
+            return RedirectResponse("/accounts?error=You+cannot+delete+the+account+you+are+using.",
+                                    status_code=303)
+
+        # Their tokens and browser sessions go with them, or a deleted account
+        # keeps working until whatever it holds happens to expire.
+        hub.db.execute("DELETE FROM tokens WHERE user_id = ?", (target_id,))
+        hub.db.execute("DELETE FROM web_sessions WHERE user_id = ?", (target_id,))
+        hub.db.execute("DELETE FROM auth_codes WHERE user_id = ?", (target_id,))
+        hub.db.execute("DELETE FROM backend_grants WHERE user_id = ?", (target_id,))
+        hub.db.execute("DELETE FROM users WHERE id = ?", (target_id,))
+        return RedirectResponse("/accounts", status_code=303)
+
     return [
         Route("/", dashboard),
+        Route("/accounts", accounts),
+        Route("/accounts/new", account_create, methods=["POST"]),
+        Route("/accounts/{user_id:int}", account_update, methods=["POST"]),
+        Route("/accounts/{user_id:int}/delete", account_delete, methods=["POST"]),
         Route("/registry", registry_search),
         Route("/registry/add", registry_add, methods=["GET", "POST"]),
         Route("/login", login, methods=["GET", "POST"]),
