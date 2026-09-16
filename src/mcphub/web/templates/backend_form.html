@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ plugin.name }} — mcphub{% endblock %}
 {% block body %}
+{# Shown as the placeholder of a field whose saved value is withheld. An empty
+   box with nothing in it reads as a setting that was never filled in, which is
+   how a fully configured backend came to look like a blank form. #}
+{% set filled_marker = "••••••••" %}
 <h1>{% if row %}{{ row.title }}{% else %}Add {{ plugin.name }}{% endif %}</h1>
 <p class="sub">{{ plugin.description }}</p>
 
@@ -87,8 +91,8 @@
       <label for="f-{{ item.field.key }}">{{ item.field.label }}{% if not item.field.required %}
         <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>
       <textarea id="f-{{ item.field.key }}" name="{{ item.field.key }}" rows="4" spellcheck="false"
-                {% if item.field.placeholder %}placeholder="{{ item.field.placeholder }}"{% endif %}
-      >{% if not item.field.secret %}{{ item.value }}{% endif %}</textarea>
+                placeholder="{% if item.withheld %}{{ filled_marker }}{% else %}{{ item.field.placeholder }}{% endif %}"
+      >{% if not item.withheld %}{{ item.value }}{% endif %}</textarea>
     {% elif item.field.type == "bool" %}
       <div class="checkline">
         <input type="checkbox" id="f-{{ item.field.key }}" name="{{ item.field.key }}"
@@ -100,13 +104,31 @@
         <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>
       <input id="f-{{ item.field.key }}" name="{{ item.field.key }}"
              type="{% if item.field.type == 'password' %}password{% elif item.field.type == 'number' %}number{% else %}text{% endif %}"
-             value="{% if not item.field.secret %}{{ item.value }}{% endif %}"
-             {% if item.field.placeholder %}placeholder="{{ item.field.placeholder }}"{% endif %}
-             {% if item.field.secret %}autocomplete="new-password"{% endif %}
-             {% if item.field.required and not item.has_value %}required{% endif %}>
+             value="{% if not item.withheld %}{{ item.value }}{% endif %}"
+             {% if item.withheld %}placeholder="{{ filled_marker }}"
+             {% elif item.field.placeholder %}placeholder="{{ item.field.placeholder }}"{% endif %}
+             {# `new-password` only where the control really is a password box: on a #}
+             {# text input it invites the browser's generate-a-password bubble over  #}
+             {# a field that wants a hostname. Encrypted-but-shown fields settle for #}
+             {# suppressing autofill.                                                #}
+             {% if item.field.type == "password" %}autocomplete="new-password"
+             {% elif item.field.secret %}autocomplete="off"{% endif %}
+             {% if item.field.required and not item.withheld %}required{% endif %}>
     {% endif %}
     {% if item.field.help and item.field.type != "multiselect" %}<p class="help">{{ item.field.help }}</p>{% endif %}
-    {% if item.has_value %}<p class="help">Saved. Leave blank to keep the current value.</p>{% endif %}
+    {# A withheld value renders an empty box either way, so say which empty box #}
+    {# this is. Clearing is offered only where it can succeed: a required field #}
+    {# has no valid empty state, so the way to change it is to replace it, and  #}
+    {# a checkbox that can only ever return "this is required" is not an offer. #}
+    {% if item.withheld %}
+      <p class="help">Saved, and not shown. Leave it blank to keep the current value.</p>
+      {% if not item.field.required %}
+      <div class="checkline" style="margin-top:6px">
+        <input type="checkbox" id="clear-{{ item.field.key }}" name="clear_{{ item.field.key }}">
+        <label for="clear-{{ item.field.key }}">Clear the saved value</label>
+      </div>
+      {% endif %}
+    {% endif %}
   </div>
   {% endfor %}
 

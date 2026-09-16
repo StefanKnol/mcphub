@@ -210,6 +210,122 @@ def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: b
         )
 
 
+CLEAR_PREFIX = "clear_"
+"""Checkbox that empties a stored value the form could not show back.
+
+A withheld field renders blank whether or not anything is saved, so a blank
+submission has to mean "leave it alone" — which left no way at all to remove a
+credential once set, short of deleting the backend.
+"""
+
+
+def stored_value(instance: BackendInstance | None, key: str) -> Any:
+    """What is saved for `key`, secret or plain, or None if nothing is."""
+    if instance is None:
+        return None
+    if key in instance.secrets:
+        return instance.secrets[key]
+    return instance.config.get(key)
+
+
+async def form_values(plugin: Any, instance: BackendInstance | None,
+                      posted: Any = None) -> list[dict[str, Any]]:
+    """One render-ready entry per field of this backend's form.
+
+    `posted` is the submission being redisplayed after a validation error. Its
+    values win over the stored ones, so a rejected save does not also throw away
+    everything typed alongside the mistake.
+
+    Three things the template needs, kept apart because they differ per field:
+    `value` is what goes in the control, `stored` says something is saved, and
+    `withheld` says something is saved that will not be shown — the case that
+    needs marking, or the box reads as empty when it is not.
+    """
+    values = []
+    for f in plugin.fields_for(instance):
+        options: list[Any] = []
+        selected: list[str] = []
+        saved = stored_value(instance, f.key)
+        # A checkbox saved as False is still a saved answer; an empty string
+        # anywhere else is the absence of one.
+        stored = saved is not None if f.type == "bool" else saved not in (None, "")
+        withheld = stored and not f.shows_value
+
+        value: Any
+        if withheld:
+            # A secret is never echoed back, not even one the user just typed
+            # into a submission that failed validation.
+            value = ""
+        elif posted is not None and f.type != "multiselect":
+            value = posted.get(f.key) is not None if f.type == "bool" else posted.get(f.key, "")
+        elif stored:
+            value = saved
+        else:
+            value = f.default
+
+        if f.type == "multiselect":
+            raw = (posted.getlist(f.key) if posted is not None else saved) or []
+            selected = list(raw) if isinstance(raw, list) else [v for v in str(raw).split(",") if v]
+            if instance is not None:
+                # Fetched live: the choices belong to the upstream, not to us.
+                # A failure here leaves the list empty rather than breaking
+                # the page, and the saved selection is still shown.
+                options = list(await plugin.options(instance, f.key))
+            value = ""
+
+        values.append({
+            "field": f, "value": "" if value is None else value,
+            "stored": stored, "withheld": withheld,
+            "options": options, "selected": selected, "choices": choice_pairs(f),
+        })
+    return values
+
+
+def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tuple[dict, dict, list[str]]:
+    config: dict[str, Any] = {}
+    secret: dict[str, Any] = dict(existing.secrets) if existing else {}
+    errors: list[str] = []
+
+    for f in plugin.fields_for(existing):
+        if f.type == "multiselect":
+            config[f.key] = [str(v) for v in form.getlist(f.key)]
+            continue
+        raw = form.get(f.key)
+        if f.type == "bool":
+            config[f.key] = raw is not None
+            continue
+        text = str(raw or "").strip()
+        if f.secret:
+            if text:
+                # A typed value settles it, even against a ticked clear box:
+                # of two contradictory instructions it is the specific one.
+                secret[f.key] = text
+            elif f.shows_value or form.get(f"{CLEAR_PREFIX}{f.key}") is not None:
+                # Either the box was rendered with the saved value in it, so an
+                # empty box was emptied on purpose, or the clear box says so
+                # outright. Only a field that renders blank no matter what can
+                # read blank as "unchanged".
+                secret.pop(f.key, None)
+                if f.required:
+                    errors.append(f"{f.label} is required.")
+            elif f.required and f.key not in secret:
+                errors.append(f"{f.label} is required.")
+            continue
+        if not text:
+            if f.required and f.default is None:
+                errors.append(f"{f.label} is required.")
+            config[f.key] = f.default if f.default is not None else ""
+            continue
+        if f.type == "number":
+            try:
+                config[f.key] = float(text) if "." in text else int(text)
+            except ValueError:
+                errors.append(f"{f.label} must be a number.")
+            continue
+        config[f.key] = text
+    return config, secret, errors
+
+
 def build(hub: Any) -> list[Route]:
     def render(request: Request, template: str, status_code: int = 200, **context: Any) -> Response:
         signed_in = current_user(hub.db, request)
@@ -386,68 +502,6 @@ def build(hub: Any) -> list[Route]:
 
     # ── backend create / edit ─────────────────────────────────────────────
 
-    async def form_values(plugin: Any, instance: BackendInstance | None) -> list[dict[str, Any]]:
-        values = []
-        for f in plugin.fields_for(instance):
-            options: list[Any] = []
-            selected: list[str] = []
-            if f.secret:
-                # Never send a stored secret back to the browser.
-                value, has_value = "", bool(instance and f.key in instance.secrets)
-            else:
-                value = instance.config.get(f.key, f.default) if instance else f.default
-                has_value = False
-
-            if f.type == "multiselect":
-                raw = value or []
-                selected = list(raw) if isinstance(raw, list) else [v for v in str(raw).split(",") if v]
-                if instance is not None:
-                    # Fetched live: the choices belong to the upstream, not to us.
-                    # A failure here leaves the list empty rather than breaking
-                    # the page, and the saved selection is still shown.
-                    options = list(await plugin.options(instance, f.key))
-                value = ""
-
-            values.append({
-                "field": f, "value": "" if value is None else value, "has_value": has_value,
-                "options": options, "selected": selected, "choices": choice_pairs(f),
-            })
-        return values
-
-    def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tuple[dict, dict, list[str]]:
-        config: dict[str, Any] = {}
-        secret: dict[str, Any] = dict(existing.secrets) if existing else {}
-        errors: list[str] = []
-
-        for f in plugin.fields_for(existing):
-            if f.type == "multiselect":
-                config[f.key] = [str(v) for v in form.getlist(f.key)]
-                continue
-            raw = form.get(f.key)
-            if f.type == "bool":
-                config[f.key] = raw is not None
-                continue
-            text = str(raw or "").strip()
-            if f.secret:
-                if text:
-                    secret[f.key] = text
-                elif f.required and f.key not in secret:
-                    errors.append(f"{f.label} is required.")
-                continue
-            if not text:
-                if f.required and f.default is None:
-                    errors.append(f"{f.label} is required.")
-                config[f.key] = f.default if f.default is not None else ""
-                continue
-            if f.type == "number":
-                try:
-                    config[f.key] = float(text) if "." in text else int(text)
-                except ValueError:
-                    errors.append(f"{f.label} must be a number.")
-                continue
-            config[f.key] = text
-        return config, secret, errors
-
     async def backend_form(request: Request) -> Response:
         user = require_user(request)
         if not user:
@@ -521,8 +575,11 @@ def build(hub: Any) -> list[Route]:
             errors.append("Display name is required.")
 
         if errors:
+            # Redisplayed from the submission, not from what is stored: a
+            # rejected slug should not also silently revert every other box on
+            # the page to its saved value.
             return render(request, "backend_form.html", plugin=plugin, row=row,
-                          fields=await form_values(plugin, instance), errors=errors,
+                          fields=await form_values(plugin, instance, posted=form), errors=errors,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
