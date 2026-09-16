@@ -56,9 +56,30 @@ class ConfigField:
     header next to a command line that would ignore it."""
 
     secret: bool = False
-    """Secret values are encrypted at rest and never sent back to the browser."""
+    """Store this value encrypted, in the sealed blob rather than in config_json.
+
+    Storage only. Whether the stored value is rendered back into the form is
+    `show_value`, which is a separate question: a variable can be worth
+    encrypting without being worth hiding from the person who typed it.
+    """
+
+    show_value: bool | None = None
+    """Whether the saved value is sent back to the browser when the form reopens.
+
+    `None` follows `secret`, which is the safe default: a plugin that declares
+    a field secret and says nothing else keeps it withheld. Set it to True on a
+    field that is encrypted at rest but not itself sensitive — a router's
+    address stored beside its password — or the settings page reopens showing
+    an empty box for a value that is in fact configured, which reads as
+    configuration that was lost.
+    """
 
     placeholder: str = ""
+
+    @property
+    def shows_value(self) -> bool:
+        """Resolve `show_value` against `secret`."""
+        return not self.secret if self.show_value is None else self.show_value
 
 
 def choice_pairs(field: ConfigField) -> list[tuple[str, str]]:

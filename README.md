@@ -376,9 +376,25 @@ unraid = "your_package:PLUGIN"
 ```
 
 `build()` must not do network I/O — a backend that is merely unreachable still
-has to mount, so its own tools can report the failure. `fields` marked `secret`
-are encrypted at rest and never rendered back into a form. A plugin that fails
-to import is logged and skipped rather than taking the hub down with it.
+has to mount, so its own tools can report the failure. A plugin that fails to
+import is logged and skipped rather than taking the hub down with it.
+
+`secret=True` stores a field encrypted, in the sealed blob rather than in the
+plaintext config. Whether it comes *back* when the form reopens is the separate
+`show_value`, which defaults to following `secret`:
+
+```python
+ConfigField("api_key", "API key", type="password", secret=True)
+ConfigField("host", "Host", secret=True, show_value=True)
+```
+
+The first reopens as an empty box marked with dots to say something is saved;
+leaving it blank keeps the stored value, and an optional one gets a checkbox to
+clear it. The second is encrypted at rest but shown back, which is right for a
+value worth keeping out of a database dump but not worth hiding from the
+administrator who typed it — a router's address beside its password. A field
+that is shown back has no "blank means unchanged" rule: it renders with its
+value in it, so an emptied box is an instruction to empty it.
 
 Two rules worth keeping in your own tools:
 

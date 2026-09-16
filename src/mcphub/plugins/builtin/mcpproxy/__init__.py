@@ -249,6 +249,13 @@ class McpProxyPlugin(PluginDefaults):
                 # plaintext column.
                 type="password" if v.get("isSecret") else "text",
                 secret=True,
+                # Displaying it back is the other question, and there the claim
+                # is worth taking: encryption at rest guards a stolen database,
+                # not the screen of the signed-in administrator who typed the
+                # value in. Withholding everything meant a router's address and
+                # its port reopened as empty boxes indistinguishable from a
+                # backend that had never been configured at all.
+                show_value=not v.get("isSecret"),
                 required=bool(v.get("isRequired")),
                 help=v.get("description", ""),
                 show_if=(CONNECTION_KEY, "launch"),

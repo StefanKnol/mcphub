@@ -59,6 +59,26 @@ def test_every_declared_variable_is_encrypted_not_only_the_flagged_ones():
             assert field.secret, f"{field.key} would be stored in a plaintext column"
 
 
+def test_an_ordinary_variable_is_still_shown_back_although_it_is_encrypted():
+    """The counterpart to the rule above. Encrypting everything is about a
+    stolen database; it is not a reason to hide a router's address from the
+    administrator who typed it, and hiding it made a configured backend reopen
+    as a blank form."""
+    fields = {f.key: f for f in PLUGIN.fields_for(instance(registry_env=DECLARED))}
+    assert fields[f"{ENV_PREFIX}MIKROTIK_HOST"].shows_value
+
+
+def test_a_variable_the_server_calls_secret_is_not_shown_back():
+    fields = {f.key: f for f in PLUGIN.fields_for(instance(registry_env=DECLARED))}
+    assert not fields[f"{ENV_PREFIX}MIKROTIK_PASSWORD"].shows_value
+
+
+def test_the_freeform_block_is_never_shown_back():
+    """Undeclared variables are by definition arbitrary, credentials included."""
+    fields = {f.key: f for f in PLUGIN.fields_for(instance(registry_env=DECLARED))}
+    assert not fields["env"].shows_value
+
+
 def test_required_flag_carries_over():
     fields = {f.key: f for f in PLUGIN.fields_for(instance(registry_env=DECLARED))}
     assert fields[f"{ENV_PREFIX}MIKROTIK_HOST"].required
