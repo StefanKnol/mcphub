@@ -25,13 +25,20 @@ FieldType = Literal["text", "password", "number", "bool", "select", "multiselect
 FIELD_TYPES: frozenset[str] = frozenset(get_args(FieldType))
 """Derived from the annotation, so the two can never drift apart."""
 
-WATCHABLE_TYPES: frozenset[str] = frozenset({"select", "bool"})
-"""Types a `show_if` may point at.
+WATCHABLE_TYPES: frozenset[str] = frozenset({"text", "password", "number", "select", "bool"})
+"""Types a `show_if` may point at: the ones holding a single scalar value.
 
-The settings page re-evaluates conditions on `change` of a `<select>` or a
-checkbox and nothing else, so a condition on a text box is read once at page
-load and then never again — the dependent field freezes at whatever it was.
-"""
+A `multiselect` holds several answers at once and a `textarea` a paragraph, so
+"the value" is not a thing either of them has. Everything else is watched, text
+boxes included — the page listens for `input` as well as `change`."""
+
+BOOL_CONDITION_VALUES: frozenset[str] = frozenset({"true", "false"})
+"""How a condition on a checkbox is spelled.
+
+A checkbox carries no value attribute, so its `.value` reads "on" whether it is
+ticked or not. Comparing against that is how `show_if=("tls", "true")` came to
+mean a field that could never appear; the page compares the ticked state, and
+these are the two words for it."""
 
 CLEAR_PREFIX = "clear_"
 """Namespace for the checkbox that empties a stored value the form withheld.
@@ -80,11 +87,16 @@ class ConfigField:
     choices: Sequence[str | tuple[str, str]] = ()
     """Options for a `select`. Either bare values, or (value, label) pairs."""
 
-    show_if: tuple[str, str] | None = None
-    """Only show this field when another field has a given value, e.g.
+    show_if: tuple[str, str | Sequence[str]] | None = None
+    """Only show this field when another field holds a given value, e.g.
     ``show_if=("connection", "launch")``. Keeps a form from presenting settings
     that cannot apply, which is how a proxy backend ended up showing an auth
-    header next to a command line that would ignore it."""
+    header next to a command line that would ignore it.
+
+    Several values are allowed — ``show_if=("mode", ("url", "proxy"))`` shows
+    the field for either. Conditions chain: a field whose controller is itself
+    hidden is hidden too, so a branch can have sub-branches. On a checkbox the
+    value is ``"true"`` or ``"false"``."""
 
     secret: bool = False
     """Store this value encrypted, in the sealed blob rather than in config_json.
@@ -107,10 +119,44 @@ class ConfigField:
 
     placeholder: str = ""
 
+    choices_from_plugin: bool = False
+    """Ask the plugin's `options()` for this field's choices, rather than
+    listing them here. For choices that are only knowable at render time — the
+    interfaces a router actually has, the databases a server actually holds —
+    which a literal list cannot express."""
+
+    group: str = ""
+    """Heading to file this field under. Consecutive fields sharing one are
+    drawn beneath it, and the heading disappears when every field under it is
+    conditioned away, so a form can be long without being a wall."""
+
+    @property
+    def asks_the_plugin_for_choices(self) -> bool:
+        """Whether `options()` supplies the choices when the form is drawn.
+
+        A `multiselect` always has: there is no static list for one, and never
+        was. A `select` does only when it says so, because the alternative —
+        treating an empty `choices` as a request — is indistinguishable from
+        forgetting to fill it in, which is a defect the validator catches.
+        """
+        return self.type == "multiselect" or self.choices_from_plugin
+
     @property
     def shows_value(self) -> bool:
         """Resolve `show_value` against `secret`."""
         return not self.secret if self.show_value is None else self.show_value
+
+
+def show_if_values(field: ConfigField) -> list[str]:
+    """The values a condition accepts, normalised to a list.
+
+    One value or several, the same way `choices` takes a bare value or a pair,
+    so neither the template nor the validator has to care which was written.
+    """
+    if field.show_if is None:
+        return []
+    wanted = field.show_if[1]
+    return [str(wanted)] if isinstance(wanted, str) else [str(v) for v in wanted]
 
 
 def choice_pairs(field: ConfigField) -> list[tuple[str, str]]:
@@ -388,10 +434,23 @@ def field_problems(fields: Sequence[ConfigField]) -> list[str]:
             )
 
         # ── the default, against the type ─────────────────────────────────
+        if f.choices_from_plugin and f.type not in ("select", "multiselect"):
+            problems.append(
+                f"{f.key!r} is a {f.type!r} field asking the plugin for choices, which only a "
+                "select or a multiselect has"
+            )
         if f.type == "select":
             pairs = choice_pairs(f)
-            if not pairs:
-                problems.append(f"{f.key!r} is a select with no choices, so it renders empty")
+            if not pairs and not f.choices_from_plugin:
+                problems.append(
+                    f"{f.key!r} is a select with no choices, so it renders empty. List them, or "
+                    "set choices_from_plugin to fetch them when the form is drawn"
+                )
+            if pairs and f.choices_from_plugin:
+                problems.append(
+                    f"{f.key!r} both lists choices and asks the plugin for them; only the "
+                    "plugin's would be shown"
+                )
             elif f.default is not None and str(f.default) not in {v for v, _ in pairs}:
                 problems.append(
                     f"{f.key!r} defaults to {f.default!r}, which is not one of its choices "
@@ -410,6 +469,7 @@ def field_problems(fields: Sequence[ConfigField]) -> list[str]:
         if f.show_if is None:
             continue
         other = f.show_if[0]
+        wanted = show_if_values(f)
         if other == f.key:
             problems.append(f"{f.key!r} is conditional on itself")
         elif other not in by_key:
@@ -419,18 +479,56 @@ def field_problems(fields: Sequence[ConfigField]) -> list[str]:
             )
         elif by_key[other].type not in WATCHABLE_TYPES:
             problems.append(
-                f"{f.key!r} is conditional on {other!r}, a {by_key[other].type!r} field. Only "
-                f"{' and '.join(sorted(WATCHABLE_TYPES))} fields are watched for changes, so "
-                "the condition would be read once at page load and never again"
+                f"{f.key!r} is conditional on {other!r}, a {by_key[other].type!r} field, which "
+                "holds no single value to compare against. Conditions may point at: "
+                f"{', '.join(sorted(WATCHABLE_TYPES))}"
             )
-        elif by_key[other].show_if is not None:
+        elif not wanted:
+            problems.append(f"{f.key!r} is conditional on {other!r} but names no value to match")
+        elif by_key[other].type == "bool" and not set(wanted) <= BOOL_CONDITION_VALUES:
             problems.append(
-                f"{f.key!r} is conditional on {other!r}, which is itself conditional. Each "
-                "condition is evaluated on its own, so this field would show whenever "
-                f"{other!r} holds the right value even while {other!r} is hidden"
+                f"{f.key!r} is conditional on the checkbox {other!r} with "
+                f"{', '.join(repr(v) for v in wanted)}. A checkbox condition is "
+                f"{' or '.join(sorted(BOOL_CONDITION_VALUES))} — anything else can never match, "
+                "because the box has no value of its own to compare"
             )
+        elif by_key[other].type == "select" and not by_key[other].choices_from_plugin:
+            offered = {v for v, _ in choice_pairs(by_key[other])}
+            unreachable = [v for v in wanted if v not in offered]
+            if unreachable:
+                problems.append(
+                    f"{f.key!r} waits for {other!r} to be "
+                    f"{', '.join(repr(v) for v in unreachable)}, which is not among its choices "
+                    f"({', '.join(sorted(offered))}), so the field can never appear"
+                )
 
+    problems.extend(_condition_cycles(by_key))
     return problems
+
+
+def _condition_cycles(by_key: dict[str, ConfigField]) -> list[str]:
+    """Conditions that chain round to themselves.
+
+    Chaining is allowed — a branch may have sub-branches, and the page resolves
+    a field's controller before the field — but a loop has no starting point,
+    so every field in it would resolve by whichever arbitrary rule broke the
+    tie rather than by what was written.
+    """
+    problems: list[str] = []
+    for start in by_key:
+        seen, key = [], start
+        while key in by_key and by_key[key].show_if is not None:
+            if key in seen:
+                break
+            seen.append(key)
+            key = by_key[key].show_if[0]
+        if key == start and start in seen and len(seen) > 1:
+            problems.append(
+                f"the conditions on {', '.join(repr(k) for k in seen)} form a loop, "
+                "so none of them can be resolved"
+            )
+    # One loop is reported once per field in it; keep the first mention only.
+    return problems[:1] if problems else []
 
 
 def validate_plugin(obj: object) -> Plugin:

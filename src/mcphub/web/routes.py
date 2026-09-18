@@ -28,6 +28,7 @@ from ..plugins.base import (
     ConfigField,
     FieldError,
     choice_pairs,
+    show_if_values,
     as_field_errors,
 )
 from .session import current_user, end_session, start_session
@@ -299,22 +300,43 @@ async def form_values(plugin: Any, instance: BackendInstance | None,
         else:
             value = f.default
 
+        if f.asks_the_plugin_for_choices and instance is not None:
+            # Fetched live: the choices belong to the upstream, not to us. A
+            # failure here leaves the list empty rather than breaking the page,
+            # and whatever was saved is still shown.
+            options = list(await plugin.options(instance, f.key))
+
         if f.type == "multiselect":
             raw = (posted.getlist(f.key) if posted is not None else saved) or []
             selected = list(raw) if isinstance(raw, list) else [v for v in str(raw).split(",") if v]
-            if instance is not None:
-                # Fetched live: the choices belong to the upstream, not to us.
-                # A failure here leaves the list empty rather than breaking
-                # the page, and the saved selection is still shown.
-                options = list(await plugin.options(instance, f.key))
             value = ""
 
         values.append({
             "field": f, "value": "" if value is None else value,
-            "stored": stored, "withheld": withheld,
+            "stored": stored, "withheld": withheld, "wanted": show_if_values(f),
             "options": options, "selected": selected, "choices": choice_pairs(f),
         })
     return values
+
+
+def orphaned_secrets(plugin: Any, instance: BackendInstance | None) -> list[str]:
+    """Stored secrets that no field of this backend's form accounts for.
+
+    An upstream that drops a variable from its declaration leaves its value
+    behind, and for the proxy plugin that orphan is not inert: `_collect_env`
+    hands every stored `env_*` key to the launched server whether or not
+    anything still declares it. So the value goes on being passed, through a
+    box that is no longer drawn.
+
+    They are shown rather than pruned. Deleting one on the quiet would change
+    what the server receives exactly as silently as keeping it does, and this
+    is the half of the bargain the form can actually offer: it cannot edit a
+    value it has no field for, but it can say the value is there and let it go.
+    """
+    if instance is None:
+        return []
+    declared = {f.key for f in plugin.fields_for(instance)}
+    return sorted(key for key in instance.secrets if key not in declared)
 
 
 def run_plugin_validation(plugin: Any, instance: BackendInstance) -> list[FieldError]:
@@ -357,7 +379,8 @@ def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tu
     secret: dict[str, Any] = dict(existing.secrets) if existing else {}
     errors: list[str] = []
 
-    for f in plugin.fields_for(existing):
+    fields = list(plugin.fields_for(existing))
+    for f in fields:
         if f.type == "multiselect":
             config[f.key] = [str(v) for v in form.getlist(f.key)]
             continue
@@ -394,6 +417,13 @@ def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tu
                 errors.append(f"{f.label} must be a number.")
             continue
         config[f.key] = text
+
+    # A stored secret with no field left to render it cannot be edited here, so
+    # removal is the only thing the form can offer — and only when asked.
+    declared = {f.key for f in fields}
+    for key in list(secret):
+        if key not in declared and form.get(f"{CLEAR_PREFIX}{key}") is not None:
+            secret.pop(key)
     return config, secret, errors
 
 
@@ -617,6 +647,7 @@ def build(hub: Any) -> list[Route]:
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[], field_errors={},
                           original_slug=slug or NEW_BACKEND,
+                          orphans=orphaned_secrets(plugin, instance),
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -664,6 +695,7 @@ def build(hub: Any) -> list[Route]:
                           fields=await form_values(plugin, instance, posted=form),
                           errors=errors + banner, field_errors=beside,
                           original_slug=slug or NEW_BACKEND,
+                          orphans=orphaned_secrets(plugin, instance),
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),

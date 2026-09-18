@@ -169,13 +169,50 @@
 // rather than shown with a note saying they will be ignored.
 (function () {
   var conditional = document.querySelectorAll("[data-show-if-field]");
-  if (!conditional.length) return;
+
+  var fieldOf = {};
+  document.querySelectorAll("[data-field-key]").forEach(function (field) {
+    fieldOf[field.dataset.fieldKey] = field;
+  });
+
+  // A checkbox carries no value attribute, so its .value reads "on" ticked or
+  // not — comparing that is how a condition on one came to mean a field that
+  // could never appear. What it actually holds is its ticked state.
+  function held(control) {
+    if (control.type === "checkbox") return control.checked ? "true" : "false";
+    return String(control.value);
+  }
+
+  // Resolved through the chain, not on its own: a field whose controller is
+  // itself hidden is hidden too, so a branch can have sub-branches. The seen
+  // list only guards against a loop the plugin validator already refuses.
+  function shows(field, seen) {
+    if (!field || !field.dataset.showIfField) return true;
+    if (seen.indexOf(field) !== -1) return true;
+    seen.push(field);
+    var control = document.getElementsByName(field.dataset.showIfField)[0];
+    if (!control) return true;
+    var wanted = JSON.parse(field.dataset.showIfValue || "[]");
+    if (wanted.indexOf(held(control)) === -1) return false;
+    return shows(fieldOf[field.dataset.showIfField], seen);
+  }
+
+  // A heading whose whole group has been conditioned away is a heading over
+  // nothing, so it goes with them.
+  function tidyGroups() {
+    document.querySelectorAll("h2.group").forEach(function (heading) {
+      // `.field`, not any [data-group]: the heading carries the same attribute
+      // and would count itself as a visible member, so it could never hide.
+      var members = document.querySelectorAll(
+        '.field[data-group="' + heading.dataset.group + '"]');
+      var anyShown = Array.prototype.some.call(members, function (m) { return !m.hidden; });
+      heading.hidden = !anyShown;
+    });
+  }
 
   function apply() {
     conditional.forEach(function (field) {
-      var control = document.getElementsByName(field.dataset.showIfField)[0];
-      if (!control) return;
-      var shown = String(control.value) === field.dataset.showIfValue;
+      var shown = shows(field, []);
       field.hidden = !shown;
       // A hidden required field would block submission with a message nobody
       // can see, so its constraint is lifted while it is out of the way.
@@ -188,10 +225,14 @@
         }
       });
     });
+    tidyGroups();
   }
 
-  document.querySelectorAll("select, input[type=checkbox]").forEach(function (el) {
+  // `input` as well as `change`, so a condition on a text box keeps up with
+  // typing instead of being read once at page load and then frozen.
+  document.querySelectorAll("input, select, textarea").forEach(function (el) {
     el.addEventListener("change", apply);
+    el.addEventListener("input", apply);
   });
   apply();
 })();

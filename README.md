@@ -448,6 +448,35 @@ because a deletion the user already asked for is not the plugin's to veto. The
 hub releases the backend's own OAuth tokens and authorization codes at the same
 time, and its grants and pins cascade with the row.
 
+### Shaping a longer form
+
+`group` files consecutive fields under a heading, and the heading disappears
+when every field beneath it is conditioned away, so a form can be long without
+being a wall.
+
+`show_if` takes one value or several — `show_if=("mode", ("url", "proxy"))`
+shows the field for either — and conditions **chain**, so a branch can have
+sub-branches: a field whose controller is itself hidden is hidden too. On a
+checkbox the value is `"true"` or `"false"`; a checkbox carries no value of its
+own, so anything else can never match. A condition may point at any field
+holding a single value, text boxes included — the page watches `input` as well
+as `change`, so it keeps up with typing.
+
+`choices_from_plugin=True` fills a `select` from `options()` when the form is
+drawn, for choices only knowable then — the interfaces a router actually has,
+the databases a server actually holds. A `multiselect` always works this way
+and needs no flag.
+
+### Values with no field left to show them
+
+A backend keeps whatever was saved for it, and an upstream that drops a
+variable from its declaration leaves the value behind. For a launched server
+that orphan is not inert: it is still put in the environment on every start,
+through a box the form no longer draws. The settings page lists them under
+*Stored, but no longer asked for*, each with a checkbox to let it go. They are
+shown rather than pruned — deleting one on the quiet would change what the
+server receives exactly as silently as keeping it does.
+
 ### What the form will reject
 
 `validate_plugin` runs at load and refuses a `fields` declaration that would
