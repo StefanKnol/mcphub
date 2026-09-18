@@ -115,6 +115,11 @@
              {% elif item.field.secret %}autocomplete="off"{% endif %}
              {% if item.field.required and not item.withheld %}required{% endif %}>
     {% endif %}
+    {# Same class the client-side validator uses, so a refusal from the server #}
+    {# and one from the browser look like the same thing, because they are.     #}
+    {% for message in (field_errors or {}).get(item.field.key, []) %}
+      <p class="field-error">{{ message }}</p>
+    {% endfor %}
     {% if item.field.help and item.field.type != "multiselect" %}<p class="help">{{ item.field.help }}</p>{% endif %}
     {# A withheld value renders an empty box either way, so say which empty box #}
     {# this is. Clearing is offered only where it can succeed: a required field #}

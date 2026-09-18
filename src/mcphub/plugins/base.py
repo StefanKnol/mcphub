@@ -14,7 +14,7 @@ same mechanism with no shortcut.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
@@ -148,6 +148,29 @@ class CheckResult:
     """One line, shown next to the Test button. On failure, say what to fix."""
 
 
+@dataclass(frozen=True)
+class FieldError:
+    """One reason a plugin refused a configuration.
+
+    `key` names the field it is about, so the message lands under that box
+    instead of in a banner at the top of a form that may be long enough to
+    scroll. Leave it empty for something true of the form as a whole — two
+    fields that contradict each other belong to neither.
+    """
+
+    message: str
+    key: str = ""
+
+
+def as_field_errors(raw: Iterable[FieldError | str] | None) -> list[FieldError]:
+    """Normalise what `validate` returned, so callers need not care.
+
+    A bare string is a message about the whole form, the same way `choices`
+    accepts a bare value in place of a (value, label) pair.
+    """
+    return [FieldError(item) if isinstance(item, str) else item for item in (raw or ())]
+
+
 @runtime_checkable
 class Plugin(Protocol):
     """What a backend must provide.
@@ -213,6 +236,24 @@ class Plugin(Protocol):
         """
         ...
 
+    def validate(self, instance: BackendInstance) -> Sequence[FieldError | str]:
+        """Reasons this configuration cannot be saved, or nothing to save it.
+
+        Runs on every save, after the declared constraints are satisfied and
+        before anything is written, so it may assume required fields are
+        present and it is the last word on whether the backend is coherent.
+
+        It is about the *values*, not about whether they work: no network, no
+        subprocess, no clock. `check()` is the one that goes and looks, on
+        demand, and may take as long as it takes. Keeping them apart is what
+        lets this one run on a save path that must stay fast, and lets a
+        backend whose device is merely switched off still be saved.
+
+        Return a `FieldError` for anything belonging to one field, so it lands
+        under that box, or a bare string for the form as a whole.
+        """
+        ...
+
     def tool_names(self, instance: BackendInstance) -> set[str]:
         """What this backend currently believes it exposes.
 
@@ -256,6 +297,9 @@ class PluginDefaults:
     async def on_save(self, instance: BackendInstance) -> dict[str, Any]:
         return {}
 
+    def validate(self, instance: BackendInstance) -> Sequence[FieldError | str]:
+        return ()
+
     def tool_names(self, instance: BackendInstance) -> set[str]:
         return set()
 
@@ -263,8 +307,8 @@ class PluginDefaults:
 REQUIRED_ATTRIBUTES = ("id", "name", "description", "fields", "build", "check")
 """What a plugin must supply itself. There is no default for any of these."""
 
-OPTIONAL_ATTRIBUTES = ("fields_for", "options", "on_save", "variant", "tool_names",
-                       "review_before_enable")
+OPTIONAL_ATTRIBUTES = ("fields_for", "options", "on_save", "validate", "variant",
+                       "tool_names", "review_before_enable")
 """Hooks the hub calls unconditionally, and `PluginDefaults` answers for free.
 
 They are optional to *write*, not optional to *have*: mix in `PluginDefaults`

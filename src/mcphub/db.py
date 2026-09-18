@@ -37,9 +37,10 @@ CREATE TABLE IF NOT EXISTS backend_grants (
     PRIMARY KEY (user_id, backend_id)
 );
 
--- One row per *backend instance*, not per plugin: two MikroTik routers are two
--- rows sharing plugin_id='mikrotik'. Each row is mounted at /mcp/{slug} and is
--- registered in Claude as its own connector, so tool surfaces never merge.
+-- One row per *backend instance*, not per plugin: two MikroTik routers wrapped
+-- through the proxy are two rows sharing plugin_id='mcp-proxy'. Each row is
+-- mounted at /mcp/{slug} and is registered in Claude as its own connector, so
+-- tool surfaces never merge.
 CREATE TABLE IF NOT EXISTS backends (
     id           INTEGER PRIMARY KEY,
     slug         TEXT NOT NULL UNIQUE,

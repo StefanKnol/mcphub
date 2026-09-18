@@ -21,13 +21,21 @@ import json
 import logging
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import urlparse
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import Prompt as UpstreamPrompt
 from mcp.types import Resource as UpstreamResource
 from mcp.types import Tool as UpstreamTool
 
-from ...base import BackendInstance, CheckResult, ConfigField, Option, PluginDefaults
+from ...base import (
+    BackendInstance,
+    CheckResult,
+    ConfigField,
+    FieldError,
+    Option,
+    PluginDefaults,
+)
 from .mirror import mirror_prompt, mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
 
@@ -276,6 +284,66 @@ class McpProxyPlugin(PluginDefaults):
             else:
                 out.append(field)
         return tuple(out)
+
+    def validate(self, instance: BackendInstance) -> list[FieldError]:
+        """Refuse the configurations that would otherwise fail quietly.
+
+        Every one of these currently saves, mounts, and then does the wrong
+        thing without saying so — which is a far worse way to find out than
+        being told at the point you typed it.
+        """
+        problems: list[FieldError] = []
+        command = str(instance.get("command", "") or "").strip()
+        url = str(instance.get("url", "") or "").strip()
+        # Mirrors `_upstream`, which is what actually decides. Validating
+        # against a different rule than the one that runs would let through
+        # exactly the configurations this is meant to stop.
+        connection = str(instance.get(CONNECTION_KEY, "") or "") or ("launch" if command else "url")
+
+        if connection == "launch" and not command:
+            problems.append(FieldError(
+                "Give the command that starts the server, or switch Connection to "
+                "a server that is already running.", "command"))
+
+        if connection == "url":
+            parsed = urlparse(url)
+            if not url:
+                problems.append(FieldError(
+                    "Give the URL of the running server, or switch Connection to "
+                    "launching one here.", "url"))
+            elif parsed.scheme not in ("http", "https") or not parsed.netloc:
+                problems.append(FieldError(
+                    f"{url!r} is not a complete URL. It needs a scheme and a host, "
+                    "as in https://192.168.1.50:8043/mcp.", "url"))
+
+            # `_upstream` sends the header only when it has both halves, so
+            # half a credential is not a half-working backend — it is one
+            # authenticating with nothing at all and not mentioning it.
+            header = str(instance.get("auth_header", "") or "").strip()
+            value = str(instance.get("auth_value", "") or "").strip()
+            if value and not header:
+                problems.append(FieldError(
+                    "Name the header to send this value in, or it will not be sent "
+                    "at all.", "auth_header"))
+            if header and not value:
+                problems.append(FieldError(
+                    f"Give the value for the {header!r} header, or the header will "
+                    "not be sent at all.", "auth_value"))
+
+        # Read raw, not through the `or 30` that `_upstream` applies: that turns
+        # a typed 0 into 30 and says nothing, which is the silent substitution
+        # this hook exists to stop. Being stricter than the runtime is fine
+        # here; being looser is what would let a bad config through.
+        raw = instance.get("timeout", 30)
+        try:
+            if raw not in (None, "") and float(raw) <= 0:
+                problems.append(FieldError(
+                    "A timeout has to be greater than zero. Leave the box empty for "
+                    "the default of 30 seconds.", "timeout"))
+        except (TypeError, ValueError):  # pragma: no cover - refused before this
+            pass
+
+        return problems
 
     def build(self, instance: BackendInstance) -> MCPServer:
         upstream = _upstream(instance)

@@ -2,9 +2,9 @@
 
 Each enabled backend becomes its own ASGI app at ``/mcp/{slug}`` and is
 registered in Claude as its own connector. They are deliberately *not* merged
-into one endpoint: this MikroTik backend alone exposes two dozen tools and a
-busy hub would reach several hundred, which is a large amount of context spent
-before a single question is asked, and measurably worse tool selection.
+into one endpoint: one wrapped server can be well over a hundred tools on its
+own, and a busy hub would reach several hundred — a large amount of context
+spent before a single question is asked, and measurably worse tool selection.
 
 Backends can be added and reconfigured while the server runs, so mounting has
 to be dynamic. The awkward part is lifespans: Starlette does not run the

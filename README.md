@@ -391,10 +391,44 @@ page half drawn. Override the ones you want:
 |---|---|
 | `fields_for(instance)` | a form shaped by *this* backend rather than one generic form |
 | `options(instance, key)` | the choices for a `multiselect`, fetched live when the form renders |
+| `validate(instance)` | refuse a configuration that cannot work, before it is saved |
 | `on_save(instance)` | cache what you discovered, so `build()` can stay offline |
 | `variant(instance, version)` | the same backend as it runs at a pinned version |
 | `tool_names(instance)` | lets Update report *what* changed, not just that something did |
 | `review_before_enable` | create backends of this kind disabled, pending a look at their tools |
+
+### Refusing a configuration
+
+The form enforces what `fields` declares — required, numeric — and nothing more.
+`validate()` is where a plugin says the rest: that a port is out of range, that a
+URL needs a scheme, that two boxes contradict each other. Return a `FieldError`
+and the message lands under that box; return a bare string and it goes in the
+banner at the top, which is where something true of the whole form belongs.
+
+```python
+def validate(self, instance: BackendInstance) -> list[FieldError]:
+    problems = []
+    if instance.get("auth_value") and not instance.get("auth_header"):
+        problems.append(FieldError(
+            "Name the header to send this value in, or it will not be sent "
+            "at all.", "auth_header"))
+    return problems
+```
+
+It runs on every save, after the declared constraints are satisfied and before
+anything is written — so it may assume required fields are present, and it is
+the last word on whether the backend is coherent. Returning problems refuses the
+save; a validator that *raises* also refuses it, with the exception shown on the
+form. Failing closed is the only safe direction for a validator: swallowing the
+error the way `on_save` does would save precisely the configuration the plugin
+meant to stop.
+
+`validate()` is about the values; `check()` is about whether they work. Keep the
+two apart. `validate()` is synchronous and does no I/O — no network, no
+subprocess, no clock — because it is on the save path and because a backend
+whose device is merely switched off still has to be savable. `check()` is the
+one that goes and looks, on demand behind the Test button, and may take as long
+as it takes.
 
 ### What the form will reject
 
