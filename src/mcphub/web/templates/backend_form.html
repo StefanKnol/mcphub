@@ -147,11 +147,42 @@
 
   <div class="actions">
     <button class="primary" type="submit">Save</button>
+    {# Tests what is in the boxes, not what is stored. On a new backend there #}
+    {# is nothing stored to test, which is exactly when it is most useful.    #}
+    <button type="button" class="test-typed" data-slug="{{ original_slug }}">Test</button>
     <a class="btn" href="/">Cancel</a>
+    <span class="result" id="test-result"></span>
   </div>
 </form>
 
 <script>
+// Test what is typed. The whole form goes up, including a secret left blank to
+// keep its stored value — the server merges that back in the same way a save
+// does, so what is tested is what saving would store.
+document.querySelectorAll("button.test-typed").forEach(function (btn) {
+  var form = btn.closest("form");
+  var out = document.getElementById("test-result");
+  btn.addEventListener("click", async function () {
+    btn.disabled = true;
+    out.className = "result";
+    out.textContent = "Testing\u2026";
+    try {
+      var res = await fetch("/backends/" + encodeURIComponent(btn.dataset.slug) + "/test", {
+        method: "POST",
+        body: new URLSearchParams(new FormData(form)),
+      });
+      var data = await res.json();
+      out.className = "result " + (data.ok ? "ok" : "bad");
+      out.textContent = data.detail;
+    } catch (err) {
+      out.className = "result bad";
+      out.textContent = "Test failed: " + err;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
+
 document.querySelectorAll(".picker").forEach(function (picker) {
   var group = picker.dataset.group;
   var boxes = picker.querySelectorAll("input[type=checkbox]");

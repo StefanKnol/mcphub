@@ -37,11 +37,24 @@ log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 
+NEW_BACKEND = "new"
+"""Stands in for the slug of a backend that does not exist yet.
+
+`/backends/new` is the create form, so `/backends/new/test` is "test what I am
+typing" — which needs no special route, because the slug pattern matches it and
+no real backend can hold the name.
+"""
+
 # Reserved because a backend mounted at one of these would shadow the hub's
 # own routes and, in the case of the OAuth endpoints, break authentication
 # for every other backend at the same time.
+#
+# `new` shadows nothing so dramatically, but `/backends/new` is registered
+# ahead of `/backends/{slug}` and both lead to the same handler, so a backend
+# named that could be created and then never opened again: its settings page
+# would forever render the blank create form instead.
 RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp",
-                  "authorize", "token", "register", "registry", "revoke"}
+                  "authorize", "token", "register", "registry", "revoke", NEW_BACKEND}
 
 
 def _initials(title: str) -> str:
@@ -577,6 +590,7 @@ def build(hub: Any) -> list[Route]:
         if request.method == "GET":
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[], field_errors={},
+                          original_slug=slug or NEW_BACKEND,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -623,6 +637,7 @@ def build(hub: Any) -> list[Route]:
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance, posted=form),
                           errors=errors + banner, field_errors=beside,
+                          original_slug=slug or NEW_BACKEND,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -649,19 +664,70 @@ def build(hub: Any) -> list[Route]:
         return RedirectResponse("/", status_code=303)
 
     async def backend_test(request: Request) -> Response:
-        """Live connectivity check, called by the Test button."""
+        """Live connectivity check, for two callers that mean different things.
+
+        The dashboard asks about a backend *as saved* and posts nothing. The
+        settings page asks about what is *typed*, and posts the form — so a
+        credential can be proved before it is committed rather than after,
+        which is the only order that helps at all when the backend is new and
+        has nothing saved to fall back on.
+        """
         user = require_user(request)
         if not user:
             return JSONResponse({"ok": False, "detail": "Not signed in."}, status_code=401)
-        if not may_use(user, request.path_params["slug"]):
-            return JSONResponse({"ok": False, "detail": "No access to this backend."}, status_code=403)
-        row = hub.backend_row(request.path_params["slug"])
-        if row is None:
-            return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
-        plugin = hub.registry.get(row["plugin_id"])
+
+        slug = request.path_params["slug"]
+        form = await request.form()
+        row = hub.backend_row(slug)
+
+        if form.get("plugin_id") is None:
+            if not may_use(user, slug):
+                return JSONResponse({"ok": False, "detail": "No access to this backend."}, status_code=403)
+            if row is None:
+                return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
+            plugin = hub.registry.get(row["plugin_id"])
+            if plugin is None:
+                return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."})
+            instance = hub.instance_from_row(row)
+            result = await plugin.check(instance)
+            return JSONResponse({"ok": result.ok, "detail": result.detail})
+
+        # Testing what was typed means running it, and for the proxy plugin a
+        # posted command is an arbitrary program to launch. That is the right
+        # to *configure* a backend, not the right to use one — a distinction
+        # the saved-backend branch above does not have to make, because there
+        # the values were configured by someone who already had it.
+        if not may_manage_backends(user):
+            return JSONResponse({"ok": False, "detail": "This account cannot configure backends."},
+                                status_code=403)
+        plugin_id = str(form.get("plugin_id", ""))
+        plugin = hub.registry.get(plugin_id)
         if plugin is None:
-            return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."})
-        result = await plugin.check(hub.instance_from_row(row))
+            return JSONResponse({"ok": False, "detail": f"Plugin {plugin_id!r} is not installed."},
+                                status_code=404)
+
+        existing = hub.instance_from_row(row) if row is not None else None
+        posted, secrets, errors = split_fields(plugin, form, existing)
+        if errors:
+            return JSONResponse({"ok": False, "detail": " ".join(errors)})
+        # Overlaid the same way a save does, so the test runs against what a
+        # save would actually store rather than the form alone.
+        instance = BackendInstance(
+            slug=slug, title=str(form.get("title", "")).strip() or slug, plugin_id=plugin.id,
+            config={**(existing.config if existing else {}), **posted}, secrets=secrets,
+        )
+
+        # Ask the plugin before going near the network. "Connection refused" is
+        # a poor way to learn that the URL had no scheme, and a launch with no
+        # command has nothing to refuse the connection in the first place.
+        problems = run_plugin_validation(plugin, instance)
+        if problems:
+            labels = {f.key: f.label for f in plugin.fields_for(existing)}
+            return JSONResponse({"ok": False, "detail": "; ".join(
+                f"{labels[p.key]}: {p.message}" if p.key in labels else p.message
+                for p in problems)})
+
+        result = await plugin.check(instance)
         return JSONResponse({"ok": result.ok, "detail": result.detail})
 
     async def backend_refresh(request: Request) -> Response:

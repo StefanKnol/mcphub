@@ -430,6 +430,15 @@ whose device is merely switched off still has to be savable. `check()` is the
 one that goes and looks, on demand behind the Test button, and may take as long
 as it takes.
 
+Test sits on the settings page as well as the dashboard, and the two ask
+different questions. The dashboard asks about the backend *as saved*. The
+settings page posts the form and asks about what is *typed* — so `check()` sees
+the instance a save would store, including a withheld secret left blank to keep
+its stored value, without anything being written. `validate()` runs first, so a
+plugin never has to diagnose a configuration it already knows is incoherent.
+On a backend that does not exist yet there is nothing saved to fall back on,
+which is where this is worth the most.
+
 ### What the form will reject
 
 `validate_plugin` runs at load and refuses a `fields` declaration that would
