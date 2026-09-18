@@ -22,7 +22,7 @@ from starlette.templating import Jinja2Templates
 from ..crypto import hash_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
-from ..plugins.base import BackendInstance, ConfigField, choice_pairs
+from ..plugins.base import CLEAR_PREFIX, BackendInstance, ConfigField, choice_pairs
 from .session import current_user, end_session, start_session
 
 log = logging.getLogger(__name__)
@@ -208,15 +208,6 @@ def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: b
             "secrets_blob = ?, updated_at = ? WHERE id = ?",
             (slug, title, int(enabled), json.dumps(config), blob, utcnow(), row["id"]),
         )
-
-
-CLEAR_PREFIX = "clear_"
-"""Checkbox that empties a stored value the form could not show back.
-
-A withheld field renders blank whether or not anything is saved, so a blank
-submission has to mean "leave it alone" — which left no way at all to remove a
-credential once set, short of deleting the backend.
-"""
 
 
 def stored_value(instance: BackendInstance | None, key: str) -> Any:
@@ -551,7 +542,7 @@ def build(hub: Any) -> list[Route]:
                           # A plugin whose tool surface comes from elsewhere starts
                           # disabled, so its tools are reviewed before they attach.
                           enabled=bool(row["enabled"]) if row
-                          else not getattr(plugin, "review_before_enable", False))
+                          else not plugin.review_before_enable)
 
         assert form is not None
         new_slug = str(form.get("slug", "")).strip().lower()
@@ -650,7 +641,7 @@ def build(hub: Any) -> list[Route]:
                                 status_code=400)
 
         before = hub.instance_from_row(row)
-        was = getattr(plugin, "tool_names", lambda _i: set())(before)
+        was = plugin.tool_names(before)
         old_version = before.config.get("upstream_version") or ""
 
         try:
@@ -668,7 +659,7 @@ def build(hub: Any) -> list[Route]:
                       enabled=bool(row["enabled"]), config=config, secrets=before.secrets, row=row)
 
         after = hub.instance_from_row(hub.backend_row(slug))
-        now = getattr(plugin, "tool_names", lambda _i: set())(after)
+        now = plugin.tool_names(after)
         new_version = config.get("upstream_version") or ""
 
         error = await hub.remount(slug)

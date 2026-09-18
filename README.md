@@ -338,16 +338,18 @@ failed" is distinguishable from "the harness is broken".
 
 ## Writing a plugin
 
-A plugin is any object with `id`, `name`, `description`, `fields`, `build()`
-and `check()`, advertised on the `mcphub.plugins` entry point group. The
-built-in MikroTik plugin uses exactly this path — there is no privileged route
-into the registry.
+A plugin supplies `id`, `name`, `description`, `fields`, `build()` and
+`check()`, mixes in `PluginDefaults` for the rest, and is advertised on the
+`mcphub.plugins` entry point group. The built-in proxy plugin uses exactly this
+path — there is no privileged route into the registry.
 
 ```python
-from mcphub.plugins.base import BackendInstance, CheckResult, ConfigField
+from mcphub.plugins.base import (
+    BackendInstance, CheckResult, ConfigField, PluginDefaults,
+)
 from mcp.server.mcpserver import MCPServer
 
-class UnraidPlugin:
+class UnraidPlugin(PluginDefaults):
     id = "unraid"
     name = "Unraid"
     description = "Manage an Unraid server."
@@ -378,6 +380,37 @@ unraid = "your_package:PLUGIN"
 `build()` must not do network I/O — a backend that is merely unreachable still
 has to mount, so its own tools can report the failure. A plugin that fails to
 import is logged and skipped rather than taking the hub down with it.
+
+`PluginDefaults` answers the hooks the hub calls on every plugin — `fields_for`,
+`options`, `on_save`, `variant`, `tool_names` and `review_before_enable`. They
+are optional to *write*, not optional to *have*: a plugin supplying none of them
+is refused at load rather than raising later inside a request, with the settings
+page half drawn. Override the ones you want:
+
+| hook | what it buys you |
+|---|---|
+| `fields_for(instance)` | a form shaped by *this* backend rather than one generic form |
+| `options(instance, key)` | the choices for a `multiselect`, fetched live when the form renders |
+| `on_save(instance)` | cache what you discovered, so `build()` can stay offline |
+| `variant(instance, version)` | the same backend as it runs at a pinned version |
+| `tool_names(instance)` | lets Update report *what* changed, not just that something did |
+| `review_before_enable` | create backends of this kind disabled, pending a look at their tools |
+
+### What the form will reject
+
+`validate_plugin` runs at load and refuses a `fields` declaration that would
+render wrongly rather than let it through to a form that merely looks fine. It
+reports every problem at once, so one pass fixes the lot. It refuses a key that
+is duplicated, unusable as an HTML control name, one of the form's own names
+(`plugin_id`, `title`, `slug`, `enabled`), or one that shadows the clear-value
+checkbox of another field (`clear_x` beside `x` — a value typed there would
+delete `x`'s stored secret). It refuses an unknown `type`, a `select` with no
+`choices`, and a `default` that is outside those choices or the wrong type for
+the field. And it refuses a `show_if` that names a field you did not declare,
+points at itself, points at a field that is itself conditional, or points at
+anything other than a `select` or a checkbox — those are the only controls the
+page watches for changes, so a condition on a text box is read once at page load
+and then never again.
 
 `secret=True` stores a field encrypted, in the sealed blob rather than in the
 plaintext config. Whether it comes *back* when the form reopens is the separate
