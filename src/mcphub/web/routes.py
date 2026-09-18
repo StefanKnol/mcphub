@@ -22,7 +22,14 @@ from starlette.templating import Jinja2Templates
 from ..crypto import hash_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
-from ..plugins.base import CLEAR_PREFIX, BackendInstance, ConfigField, choice_pairs
+from ..plugins.base import (
+    CLEAR_PREFIX,
+    BackendInstance,
+    ConfigField,
+    FieldError,
+    choice_pairs,
+    as_field_errors,
+)
 from .session import current_user, end_session, start_session
 
 log = logging.getLogger(__name__)
@@ -270,6 +277,41 @@ async def form_values(plugin: Any, instance: BackendInstance | None,
             "options": options, "selected": selected, "choices": choice_pairs(f),
         })
     return values
+
+
+def run_plugin_validation(plugin: Any, instance: BackendInstance) -> list[FieldError]:
+    """Run the plugin's own validation, failing closed.
+
+    A validator that raises cannot be waved through the way `on_save` is: the
+    point of the hook is to stop a configuration, so a broken one has to stop
+    it too. Swallowing the exception would let exactly the config the plugin
+    meant to refuse be the one that gets saved.
+    """
+    try:
+        return as_field_errors(plugin.validate(instance))
+    except Exception as exc:  # noqa: BLE001 - reported on the form, not raised
+        log.exception("validate hook failed for backend %s", instance.slug)
+        return [FieldError(
+            f"{plugin.id} could not check this configuration: {type(exc).__name__}: {exc}"
+        )]
+
+
+def place_errors(problems: list[FieldError], keys: set[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Split problems into the banner and the per-field notes.
+
+    A problem naming a field the form is not showing would otherwise be
+    rendered nowhere at all, so anything unplaceable falls back to the banner
+    rather than disappearing — silently losing the reason a save was refused
+    is the one outcome worse than an ugly one.
+    """
+    banner: list[str] = []
+    beside: dict[str, list[str]] = {}
+    for problem in problems:
+        if problem.key and problem.key in keys:
+            beside.setdefault(problem.key, []).append(problem.message)
+        else:
+            banner.append(problem.message)
+    return banner, beside
 
 
 def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tuple[dict, dict, list[str]]:
@@ -534,7 +576,7 @@ def build(hub: Any) -> list[Route]:
 
         if request.method == "GET":
             return render(request, "backend_form.html", plugin=plugin, row=row,
-                          fields=await form_values(plugin, instance), errors=[],
+                          fields=await form_values(plugin, instance), errors=[], field_errors={},
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -565,12 +607,22 @@ def build(hub: Any) -> list[Route]:
         if not title:
             errors.append("Display name is required.")
 
-        if errors:
+        proposed = BackendInstance(slug=new_slug, title=title, plugin_id=plugin.id,
+                                   config=config, secrets=secret)
+        # Only once the declared constraints hold. Asking the plugin whether a
+        # host is reachable while the host box is still empty produces a second
+        # complaint about the same blank field, and the two disagree about what
+        # is wrong with it.
+        problems = [] if errors else run_plugin_validation(plugin, proposed)
+
+        if errors or problems:
+            banner, beside = place_errors(problems, {f.key for f in plugin.fields_for(instance)})
             # Redisplayed from the submission, not from what is stored: a
             # rejected slug should not also silently revert every other box on
             # the page to its saved value.
             return render(request, "backend_form.html", plugin=plugin, row=row,
-                          fields=await form_values(plugin, instance, posted=form), errors=errors,
+                          fields=await form_values(plugin, instance, posted=form),
+                          errors=errors + banner, field_errors=beside,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -580,10 +632,7 @@ def build(hub: Any) -> list[Route]:
         # catalogue, say) so that `build` never needs the network. A failure here
         # must not lose the user's edits, so it is folded in and ignored.
         try:
-            discovered = await plugin.on_save(
-                BackendInstance(slug=new_slug, title=title, plugin_id=plugin.id,
-                                config=config, secrets=secret)
-            )
+            discovered = await plugin.on_save(proposed)
             config.update(discovered or {})
         except Exception:  # noqa: BLE001 - saving is the priority
             log.exception("on_save hook failed for backend %s", new_slug)
