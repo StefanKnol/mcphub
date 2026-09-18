@@ -254,6 +254,22 @@ class Plugin(Protocol):
         """
         ...
 
+    async def on_delete(self, instance: BackendInstance) -> None:
+        """Release whatever this backend holds elsewhere, before it is forgotten.
+
+        Called once the endpoint is down and before the row is removed, with
+        the configuration still intact — so a plugin that provisioned something
+        (a token it registered, a working directory, a webhook subscription)
+        gets its last chance to undo that while it still holds the credentials
+        to do it with.
+
+        A failure here is logged and reported, and the deletion goes ahead
+        anyway. Unlike `validate`, this one must not fail closed: a removal the
+        user has already asked for is not the plugin's to veto, and a hook that
+        always raised would leave no way out but editing the database by hand.
+        """
+        ...
+
     def tool_names(self, instance: BackendInstance) -> set[str]:
         """What this backend currently believes it exposes.
 
@@ -300,6 +316,9 @@ class PluginDefaults:
     def validate(self, instance: BackendInstance) -> Sequence[FieldError | str]:
         return ()
 
+    async def on_delete(self, instance: BackendInstance) -> None:
+        return None
+
     def tool_names(self, instance: BackendInstance) -> set[str]:
         return set()
 
@@ -307,8 +326,8 @@ class PluginDefaults:
 REQUIRED_ATTRIBUTES = ("id", "name", "description", "fields", "build", "check")
 """What a plugin must supply itself. There is no default for any of these."""
 
-OPTIONAL_ATTRIBUTES = ("fields_for", "options", "on_save", "validate", "variant",
-                       "tool_names", "review_before_enable")
+OPTIONAL_ATTRIBUTES = ("fields_for", "options", "on_save", "on_delete", "validate",
+                       "variant", "tool_names", "review_before_enable")
 """Hooks the hub calls unconditionally, and `PluginDefaults` answers for free.
 
 They are optional to *write*, not optional to *have*: mix in `PluginDefaults`

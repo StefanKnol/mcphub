@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from typing import Any
 
 from starlette.requests import Request
@@ -211,6 +211,31 @@ def _resource_slug(resource: str | None) -> str | None:
     path = urlparse(str(resource)).path.rstrip("/")
     marker = "/mcp/"
     return path[path.rindex(marker) + len(marker):] if marker in path else None
+
+
+def _revoke_backend_credentials(hub: Any, slug: str) -> int:
+    """Drop every credential minted for this backend's endpoint.
+
+    Tokens carry the endpoint as an RFC 8707 resource string and nothing links
+    them back to the row, so deleting a backend left them behind. Recreate the
+    same slug later and those strings match again — the per-request grant check
+    still refuses, since the grants went with the row, but a credential
+    outliving the thing it was issued for is not worth keeping around.
+
+    Matched through `_resource_slug`, the same rule authorization uses, rather
+    than by comparing whole URLs: a hub whose public URL has changed since a
+    token was issued must still recognise its own.
+    """
+    removed = 0
+    for row in hub.db.query("SELECT token_hash, resource FROM tokens"):
+        if _resource_slug(row["resource"]) == slug:
+            hub.db.execute("DELETE FROM tokens WHERE token_hash = ?", (row["token_hash"],))
+            removed += 1
+    for row in hub.db.query("SELECT code, resource FROM auth_codes"):
+        if _resource_slug(row["resource"]) == slug:
+            hub.db.execute("DELETE FROM auth_codes WHERE code = ?", (row["code"],))
+            removed += 1
+    return removed
 
 
 def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: bool,
@@ -544,7 +569,8 @@ def build(hub: Any) -> list[Route]:
         ]
         return render(request, "dashboard.html", backends=backends,
                       plugins=hub.registry.all() if may_manage_backends(user) else [],
-                      can_manage=may_manage_backends(user), is_admin=is_admin(user))
+                      can_manage=may_manage_backends(user), is_admin=is_admin(user),
+                      errors=request.query_params.getlist("error"))
 
     # ── backend create / edit ─────────────────────────────────────────────
 
@@ -918,9 +944,31 @@ def build(hub: Any) -> list[Route]:
         if not may_manage_backends(user):
             return denied(request, "This account cannot configure backends.")
         slug = request.path_params["slug"]
+        row = hub.backend_row(slug)
+        if row is None:
+            return RedirectResponse("/", status_code=303)
+
+        # The endpoint comes down first, so nothing new arrives while the
+        # plugin is releasing whatever this backend holds.
         await hub.mounts.unmount(slug)
+
+        note = ""
+        plugin = hub.registry.get(row["plugin_id"])
+        if plugin is None:
+            note = (f"{slug!r} was removed, but its plugin {row['plugin_id']!r} is not "
+                    "installed, so anything it had set up elsewhere was left alone.")
+        else:
+            try:
+                await plugin.on_delete(hub.instance_from_row(row))
+            except Exception as exc:  # noqa: BLE001 - the removal still goes ahead
+                log.exception("on_delete hook failed for backend %s", slug)
+                note = (f"{slug!r} was removed, but {plugin.id} could not finish cleaning "
+                        f"up after it: {type(exc).__name__}: {exc}")
+
+        released = _revoke_backend_credentials(hub, slug)
         hub.db.execute("DELETE FROM backends WHERE slug = ?", (slug,))
-        return RedirectResponse("/", status_code=303)
+        log.info("deleted backend %s, releasing %d credential(s)", slug, released)
+        return RedirectResponse(f"/?error={quote(note)}" if note else "/", status_code=303)
 
     # ── account ───────────────────────────────────────────────────────────
 
