@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Backends — mcphub{% endblock %}
 {% block body %}
+{% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
 <h1>Backends</h1>
 <p class="sub">Each backend is its own MCP endpoint. Add each one to Claude as a separate
 connector so their tools stay in separate lists.</p>

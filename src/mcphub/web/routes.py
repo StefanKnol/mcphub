@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from typing import Any
 
 from starlette.requests import Request
@@ -28,6 +28,7 @@ from ..plugins.base import (
     ConfigField,
     FieldError,
     choice_pairs,
+    show_if_values,
     as_field_errors,
 )
 from .session import current_user, end_session, start_session
@@ -37,11 +38,24 @@ log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 
+NEW_BACKEND = "new"
+"""Stands in for the slug of a backend that does not exist yet.
+
+`/backends/new` is the create form, so `/backends/new/test` is "test what I am
+typing" — which needs no special route, because the slug pattern matches it and
+no real backend can hold the name.
+"""
+
 # Reserved because a backend mounted at one of these would shadow the hub's
 # own routes and, in the case of the OAuth endpoints, break authentication
 # for every other backend at the same time.
+#
+# `new` shadows nothing so dramatically, but `/backends/new` is registered
+# ahead of `/backends/{slug}` and both lead to the same handler, so a backend
+# named that could be created and then never opened again: its settings page
+# would forever render the blank create form instead.
 RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp",
-                  "authorize", "token", "register", "registry", "revoke"}
+                  "authorize", "token", "register", "registry", "revoke", NEW_BACKEND}
 
 
 def _initials(title: str) -> str:
@@ -200,6 +214,31 @@ def _resource_slug(resource: str | None) -> str | None:
     return path[path.rindex(marker) + len(marker):] if marker in path else None
 
 
+def _revoke_backend_credentials(hub: Any, slug: str) -> int:
+    """Drop every credential minted for this backend's endpoint.
+
+    Tokens carry the endpoint as an RFC 8707 resource string and nothing links
+    them back to the row, so deleting a backend left them behind. Recreate the
+    same slug later and those strings match again — the per-request grant check
+    still refuses, since the grants went with the row, but a credential
+    outliving the thing it was issued for is not worth keeping around.
+
+    Matched through `_resource_slug`, the same rule authorization uses, rather
+    than by comparing whole URLs: a hub whose public URL has changed since a
+    token was issued must still recognise its own.
+    """
+    removed = 0
+    for row in hub.db.query("SELECT token_hash, resource FROM tokens"):
+        if _resource_slug(row["resource"]) == slug:
+            hub.db.execute("DELETE FROM tokens WHERE token_hash = ?", (row["token_hash"],))
+            removed += 1
+    for row in hub.db.query("SELECT code, resource FROM auth_codes"):
+        if _resource_slug(row["resource"]) == slug:
+            hub.db.execute("DELETE FROM auth_codes WHERE code = ?", (row["code"],))
+            removed += 1
+    return removed
+
+
 def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: bool,
                   config: dict[str, Any], secrets: dict[str, Any], row: Any = None) -> None:
     blob = hub.secrets.seal(secrets) if secrets else None
@@ -261,22 +300,43 @@ async def form_values(plugin: Any, instance: BackendInstance | None,
         else:
             value = f.default
 
+        if f.asks_the_plugin_for_choices and instance is not None:
+            # Fetched live: the choices belong to the upstream, not to us. A
+            # failure here leaves the list empty rather than breaking the page,
+            # and whatever was saved is still shown.
+            options = list(await plugin.options(instance, f.key))
+
         if f.type == "multiselect":
             raw = (posted.getlist(f.key) if posted is not None else saved) or []
             selected = list(raw) if isinstance(raw, list) else [v for v in str(raw).split(",") if v]
-            if instance is not None:
-                # Fetched live: the choices belong to the upstream, not to us.
-                # A failure here leaves the list empty rather than breaking
-                # the page, and the saved selection is still shown.
-                options = list(await plugin.options(instance, f.key))
             value = ""
 
         values.append({
             "field": f, "value": "" if value is None else value,
-            "stored": stored, "withheld": withheld,
+            "stored": stored, "withheld": withheld, "wanted": show_if_values(f),
             "options": options, "selected": selected, "choices": choice_pairs(f),
         })
     return values
+
+
+def orphaned_secrets(plugin: Any, instance: BackendInstance | None) -> list[str]:
+    """Stored secrets that no field of this backend's form accounts for.
+
+    An upstream that drops a variable from its declaration leaves its value
+    behind, and for the proxy plugin that orphan is not inert: `_collect_env`
+    hands every stored `env_*` key to the launched server whether or not
+    anything still declares it. So the value goes on being passed, through a
+    box that is no longer drawn.
+
+    They are shown rather than pruned. Deleting one on the quiet would change
+    what the server receives exactly as silently as keeping it does, and this
+    is the half of the bargain the form can actually offer: it cannot edit a
+    value it has no field for, but it can say the value is there and let it go.
+    """
+    if instance is None:
+        return []
+    declared = {f.key for f in plugin.fields_for(instance)}
+    return sorted(key for key in instance.secrets if key not in declared)
 
 
 def run_plugin_validation(plugin: Any, instance: BackendInstance) -> list[FieldError]:
@@ -319,7 +379,8 @@ def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tu
     secret: dict[str, Any] = dict(existing.secrets) if existing else {}
     errors: list[str] = []
 
-    for f in plugin.fields_for(existing):
+    fields = list(plugin.fields_for(existing))
+    for f in fields:
         if f.type == "multiselect":
             config[f.key] = [str(v) for v in form.getlist(f.key)]
             continue
@@ -356,6 +417,13 @@ def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tu
                 errors.append(f"{f.label} must be a number.")
             continue
         config[f.key] = text
+
+    # A stored secret with no field left to render it cannot be edited here, so
+    # removal is the only thing the form can offer — and only when asked.
+    declared = {f.key for f in fields}
+    for key in list(secret):
+        if key not in declared and form.get(f"{CLEAR_PREFIX}{key}") is not None:
+            secret.pop(key)
     return config, secret, errors
 
 
@@ -531,7 +599,8 @@ def build(hub: Any) -> list[Route]:
         ]
         return render(request, "dashboard.html", backends=backends,
                       plugins=hub.registry.all() if may_manage_backends(user) else [],
-                      can_manage=may_manage_backends(user), is_admin=is_admin(user))
+                      can_manage=may_manage_backends(user), is_admin=is_admin(user),
+                      errors=request.query_params.getlist("error"))
 
     # ── backend create / edit ─────────────────────────────────────────────
 
@@ -577,6 +646,8 @@ def build(hub: Any) -> list[Route]:
         if request.method == "GET":
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[], field_errors={},
+                          original_slug=slug or NEW_BACKEND,
+                          orphans=orphaned_secrets(plugin, instance),
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -623,6 +694,8 @@ def build(hub: Any) -> list[Route]:
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance, posted=form),
                           errors=errors + banner, field_errors=beside,
+                          original_slug=slug or NEW_BACKEND,
+                          orphans=orphaned_secrets(plugin, instance),
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -649,19 +722,70 @@ def build(hub: Any) -> list[Route]:
         return RedirectResponse("/", status_code=303)
 
     async def backend_test(request: Request) -> Response:
-        """Live connectivity check, called by the Test button."""
+        """Live connectivity check, for two callers that mean different things.
+
+        The dashboard asks about a backend *as saved* and posts nothing. The
+        settings page asks about what is *typed*, and posts the form — so a
+        credential can be proved before it is committed rather than after,
+        which is the only order that helps at all when the backend is new and
+        has nothing saved to fall back on.
+        """
         user = require_user(request)
         if not user:
             return JSONResponse({"ok": False, "detail": "Not signed in."}, status_code=401)
-        if not may_use(user, request.path_params["slug"]):
-            return JSONResponse({"ok": False, "detail": "No access to this backend."}, status_code=403)
-        row = hub.backend_row(request.path_params["slug"])
-        if row is None:
-            return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
-        plugin = hub.registry.get(row["plugin_id"])
+
+        slug = request.path_params["slug"]
+        form = await request.form()
+        row = hub.backend_row(slug)
+
+        if form.get("plugin_id") is None:
+            if not may_use(user, slug):
+                return JSONResponse({"ok": False, "detail": "No access to this backend."}, status_code=403)
+            if row is None:
+                return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
+            plugin = hub.registry.get(row["plugin_id"])
+            if plugin is None:
+                return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."})
+            instance = hub.instance_from_row(row)
+            result = await plugin.check(instance)
+            return JSONResponse({"ok": result.ok, "detail": result.detail})
+
+        # Testing what was typed means running it, and for the proxy plugin a
+        # posted command is an arbitrary program to launch. That is the right
+        # to *configure* a backend, not the right to use one — a distinction
+        # the saved-backend branch above does not have to make, because there
+        # the values were configured by someone who already had it.
+        if not may_manage_backends(user):
+            return JSONResponse({"ok": False, "detail": "This account cannot configure backends."},
+                                status_code=403)
+        plugin_id = str(form.get("plugin_id", ""))
+        plugin = hub.registry.get(plugin_id)
         if plugin is None:
-            return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."})
-        result = await plugin.check(hub.instance_from_row(row))
+            return JSONResponse({"ok": False, "detail": f"Plugin {plugin_id!r} is not installed."},
+                                status_code=404)
+
+        existing = hub.instance_from_row(row) if row is not None else None
+        posted, secrets, errors = split_fields(plugin, form, existing)
+        if errors:
+            return JSONResponse({"ok": False, "detail": " ".join(errors)})
+        # Overlaid the same way a save does, so the test runs against what a
+        # save would actually store rather than the form alone.
+        instance = BackendInstance(
+            slug=slug, title=str(form.get("title", "")).strip() or slug, plugin_id=plugin.id,
+            config={**(existing.config if existing else {}), **posted}, secrets=secrets,
+        )
+
+        # Ask the plugin before going near the network. "Connection refused" is
+        # a poor way to learn that the URL had no scheme, and a launch with no
+        # command has nothing to refuse the connection in the first place.
+        problems = run_plugin_validation(plugin, instance)
+        if problems:
+            labels = {f.key: f.label for f in plugin.fields_for(existing)}
+            return JSONResponse({"ok": False, "detail": "; ".join(
+                f"{labels[p.key]}: {p.message}" if p.key in labels else p.message
+                for p in problems)})
+
+        result = await plugin.check(instance)
         return JSONResponse({"ok": result.ok, "detail": result.detail})
 
     async def backend_refresh(request: Request) -> Response:
@@ -852,9 +976,31 @@ def build(hub: Any) -> list[Route]:
         if not may_manage_backends(user):
             return denied(request, "This account cannot configure backends.")
         slug = request.path_params["slug"]
+        row = hub.backend_row(slug)
+        if row is None:
+            return RedirectResponse("/", status_code=303)
+
+        # The endpoint comes down first, so nothing new arrives while the
+        # plugin is releasing whatever this backend holds.
         await hub.mounts.unmount(slug)
+
+        note = ""
+        plugin = hub.registry.get(row["plugin_id"])
+        if plugin is None:
+            note = (f"{slug!r} was removed, but its plugin {row['plugin_id']!r} is not "
+                    "installed, so anything it had set up elsewhere was left alone.")
+        else:
+            try:
+                await plugin.on_delete(hub.instance_from_row(row))
+            except Exception as exc:  # noqa: BLE001 - the removal still goes ahead
+                log.exception("on_delete hook failed for backend %s", slug)
+                note = (f"{slug!r} was removed, but {plugin.id} could not finish cleaning "
+                        f"up after it: {type(exc).__name__}: {exc}")
+
+        released = _revoke_backend_credentials(hub, slug)
         hub.db.execute("DELETE FROM backends WHERE slug = ?", (slug,))
-        return RedirectResponse("/", status_code=303)
+        log.info("deleted backend %s, releasing %d credential(s)", slug, released)
+        return RedirectResponse(f"/?error={quote(note)}" if note else "/", status_code=303)
 
     # ── account ───────────────────────────────────────────────────────────
 

@@ -394,6 +394,7 @@ page half drawn. Override the ones you want:
 | `validate(instance)` | refuse a configuration that cannot work, before it is saved |
 | `on_save(instance)` | cache what you discovered, so `build()` can stay offline |
 | `variant(instance, version)` | the same backend as it runs at a pinned version |
+| `on_delete(instance)` | release what this backend holds elsewhere, before it is forgotten |
 | `tool_names(instance)` | lets Update report *what* changed, not just that something did |
 | `review_before_enable` | create backends of this kind disabled, pending a look at their tools |
 
@@ -429,6 +430,52 @@ subprocess, no clock — because it is on the save path and because a backend
 whose device is merely switched off still has to be savable. `check()` is the
 one that goes and looks, on demand behind the Test button, and may take as long
 as it takes.
+
+Test sits on the settings page as well as the dashboard, and the two ask
+different questions. The dashboard asks about the backend *as saved*. The
+settings page posts the form and asks about what is *typed* — so `check()` sees
+the instance a save would store, including a withheld secret left blank to keep
+its stored value, without anything being written. `validate()` runs first, so a
+plugin never has to diagnose a configuration it already knows is incoherent.
+On a backend that does not exist yet there is nothing saved to fall back on,
+which is where this is worth the most.
+
+`on_delete()` is the mirror of `on_save()` and runs once the endpoint is down,
+with the configuration still intact, so a plugin can undo what it provisioned
+while it still holds the credentials to do it with. It is the one hook that
+fails *open*: a failure is reported on the dashboard and the removal goes ahead,
+because a deletion the user already asked for is not the plugin's to veto. The
+hub releases the backend's own OAuth tokens and authorization codes at the same
+time, and its grants and pins cascade with the row.
+
+### Shaping a longer form
+
+`group` files consecutive fields under a heading, and the heading disappears
+when every field beneath it is conditioned away, so a form can be long without
+being a wall.
+
+`show_if` takes one value or several — `show_if=("mode", ("url", "proxy"))`
+shows the field for either — and conditions **chain**, so a branch can have
+sub-branches: a field whose controller is itself hidden is hidden too. On a
+checkbox the value is `"true"` or `"false"`; a checkbox carries no value of its
+own, so anything else can never match. A condition may point at any field
+holding a single value, text boxes included — the page watches `input` as well
+as `change`, so it keeps up with typing.
+
+`choices_from_plugin=True` fills a `select` from `options()` when the form is
+drawn, for choices only knowable then — the interfaces a router actually has,
+the databases a server actually holds. A `multiselect` always works this way
+and needs no flag.
+
+### Values with no field left to show them
+
+A backend keeps whatever was saved for it, and an upstream that drops a
+variable from its declaration leaves the value behind. For a launched server
+that orphan is not inert: it is still put in the environment on every start,
+through a box the form no longer draws. The settings page lists them under
+*Stored, but no longer asked for*, each with a checkbox to let it go. They are
+shown rather than pruned — deleting one on the quiet would change what the
+server receives exactly as silently as keeping it does.
 
 ### What the form will reject
 

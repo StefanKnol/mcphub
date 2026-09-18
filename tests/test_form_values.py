@@ -14,12 +14,13 @@ import re
 import pytest
 from starlette.datastructures import FormData
 
-from mcphub.plugins.base import BackendInstance, ConfigField
-from mcphub.plugins.builtin.mcpproxy import ENV_PREFIX, PLUGIN
+from mcphub.plugins.base import BackendInstance, ConfigField, Option, PluginDefaults
+from mcphub.plugins.builtin.mcpproxy import ENV_PREFIX, PLUGIN, _collect_env
 from mcphub.web.routes import (
     CLEAR_PREFIX,
     TEMPLATES,
     form_values,
+    orphaned_secrets,
     split_fields,
     stored_value,
 )
@@ -216,6 +217,91 @@ def test_stored_value_prefers_the_sealed_blob():
 @pytest.mark.parametrize("instance,key", [(None, "k"), (configured(), "nothing_here")])
 def test_stored_value_is_none_when_nothing_is_saved(instance, key):
     assert stored_value(instance, key) is None
+
+
+# ── values with no field left to show them ────────────────────────────────
+
+def test_a_secret_the_form_still_declares_is_not_an_orphan():
+    assert f"{ENV_PREFIX}THING_TOKEN" not in orphaned_secrets(PLUGIN, configured())
+
+
+def test_a_secret_no_field_accounts_for_is_named():
+    """An upstream that drops a variable leaves its value behind, and for a
+    launched server that orphan is still handed to it on every start — through
+    a box that is no longer drawn."""
+    instance = BackendInstance(
+        slug="thing", title="Thing", plugin_id="mcp-proxy",
+        config={"registry_env": DECLARED, "connection": "launch", "command": "uvx thing"},
+        secrets={**SAVED_SECRETS, f"{ENV_PREFIX}RETIRED": "still-being-passed"})
+    assert orphaned_secrets(PLUGIN, instance) == [f"{ENV_PREFIX}RETIRED"]
+
+
+def test_an_orphan_is_still_reaching_the_launched_server():
+    """Which is why it is shown rather than quietly pruned: it is not clutter,
+    it is a setting in force that nothing on the page would otherwise admit."""
+    instance = BackendInstance(
+        slug="thing", title="Thing", plugin_id="mcp-proxy",
+        config={"registry_env": DECLARED, "connection": "launch", "command": "uvx thing"},
+        secrets={f"{ENV_PREFIX}RETIRED": "still-being-passed"})
+    assert _collect_env(instance) == {"RETIRED": "still-being-passed"}
+
+
+def test_a_new_backend_has_no_orphans():
+    assert orphaned_secrets(PLUGIN, None) == []
+
+
+def test_an_orphan_survives_a_save_that_does_not_mention_it():
+    instance = BackendInstance(
+        slug="t", title="T", plugin_id="mcp-proxy",
+        config={"registry_env": DECLARED, "connection": "launch", "command": "uvx thing"},
+        secrets={f"{ENV_PREFIX}RETIRED": "keep-me"})
+    _, secrets, _ = split_fields(PLUGIN, FormData(BASE_FORM), instance)
+    assert secrets[f"{ENV_PREFIX}RETIRED"] == "keep-me"
+
+
+def test_an_orphan_can_be_let_go_explicitly():
+    """Removal is the only thing the form can offer for a value it has no field
+    to edit."""
+    instance = BackendInstance(
+        slug="t", title="T", plugin_id="mcp-proxy",
+        config={"registry_env": DECLARED, "connection": "launch", "command": "uvx thing"},
+        secrets={f"{ENV_PREFIX}RETIRED": "let-me-go"})
+    _, secrets, _ = split_fields(
+        PLUGIN, FormData(BASE_FORM + [(f"clear_{ENV_PREFIX}RETIRED", "on")]), instance)
+    assert f"{ENV_PREFIX}RETIRED" not in secrets
+
+
+async def test_the_page_names_every_orphan_with_a_way_to_clear_it():
+    instance = BackendInstance(
+        slug="t", title="T", plugin_id="mcp-proxy",
+        config={"registry_env": DECLARED, "connection": "launch", "command": "uvx thing"},
+        secrets={f"{ENV_PREFIX}RETIRED": "orphaned-credential"})
+    page = TEMPLATES.get_template("backend_form.html").render(
+        plugin=PLUGIN, row={"title": "T"}, fields=await form_values(PLUGIN, instance),
+        errors=[], field_errors={}, pinnable=False, slug="t", title="T", enabled=False,
+        original_slug="t", orphans=orphaned_secrets(PLUGIN, instance),
+        public_url="http://x", user={"id": 1}, is_admin=True)
+    assert "no longer asked for" in page
+    assert f'name="clear_{ENV_PREFIX}RETIRED"' in page
+    assert "orphaned-credential" not in page, "an orphan is still a secret"
+
+
+# ── choices the plugin supplies ───────────────────────────────────────────
+
+async def test_a_dynamic_select_is_filled_from_the_plugin():
+    class Router(PluginDefaults):
+        id, name, description = "router", "Router", "d"
+        fields = (ConfigField("iface", "Interface", type="select", choices_from_plugin=True),)
+
+        def build(self, instance): ...
+        async def check(self, instance): ...
+        async def options(self, instance, key):
+            return [Option("eth0", "eth0 — uplink")]
+
+    plugin = Router()
+    instance = BackendInstance(slug="r", title="R", plugin_id="router")
+    fields = {i["field"].key: i for i in await form_values(plugin, instance)}
+    assert [o.value for o in fields["iface"]["options"]] == ["eth0"]
 
 
 # ── the page itself ───────────────────────────────────────────────────────

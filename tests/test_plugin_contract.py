@@ -27,6 +27,7 @@ from mcphub.plugins.base import (
     ConfigField,
     PluginDefaults,
     field_problems,
+    show_if_values,
     validate_plugin,
 )
 from mcphub.plugins.builtin.mcpproxy import PLUGIN
@@ -129,6 +130,41 @@ def test_a_select_default_outside_its_choices_is_refused():
     assert "not one of its choices" in found
 
 
+def test_a_select_may_get_its_choices_from_the_plugin_instead():
+    """Some choices are only knowable at render time — the interfaces a router
+    actually has — which a literal list cannot express."""
+    assert not problems(ConfigField("k", "K", type="select", choices_from_plugin=True))
+
+
+def test_a_select_cannot_both_list_choices_and_ask_for_them():
+    """Only the plugin's would be shown, so the list is a lie about the form."""
+    found = problems(ConfigField("k", "K", type="select", choices=("a",), choices_from_plugin=True))
+    assert "both lists choices and asks the plugin" in found
+
+
+@pytest.mark.parametrize("kind", ["text", "number", "bool", "textarea"])
+def test_asking_for_choices_where_there_are_none_to_show_is_refused(kind):
+    found = problems(ConfigField("k", "K", type=kind, choices_from_plugin=True))
+    assert "which only a select or a multiselect has" in found
+
+
+def test_a_multiselect_always_asks_the_plugin():
+    """It has no static list and never had one."""
+    assert ConfigField("k", "K", type="multiselect").asks_the_plugin_for_choices
+
+
+def test_a_plain_select_does_not():
+    assert not ConfigField("k", "K", type="select", choices=("a",)).asks_the_plugin_for_choices
+
+
+def test_a_condition_on_a_dynamic_select_is_not_second_guessed():
+    """Its choices are not known until the form is drawn, so nothing here can
+    say the value will never be among them."""
+    assert not problems(
+        ConfigField("mode", "Mode", type="select", choices_from_plugin=True),
+        ConfigField("k", "K", show_if=("mode", "whatever-the-server-says")))
+
+
 def test_a_select_default_may_be_omitted():
     assert not problems(ConfigField("k", "K", type="select", choices=("a", "b")))
 
@@ -173,12 +209,11 @@ def test_a_condition_on_an_undeclared_field_is_refused():
     assert "does not declare" in problems(ConfigField("k", "K", show_if=("ghost", "yes")))
 
 
-def test_a_condition_on_a_text_field_is_refused():
-    """Only selects and checkboxes are watched for changes, so the condition is
-    read once at page load and the field then freezes."""
-    found = problems(ConfigField("driver", "Driver"),
-                     ConfigField("k", "K", show_if=("driver", "x")))
-    assert "read once at page load and never again" in found
+def test_a_condition_on_a_text_field_is_accepted():
+    """The page listens for `input` as well as `change`, so a condition on a
+    text box keeps up with typing instead of freezing at page load."""
+    assert not problems(ConfigField("driver", "Driver"),
+                        ConfigField("k", "K", show_if=("driver", "x")))
 
 
 def test_a_condition_on_a_checkbox_is_accepted():
@@ -186,15 +221,76 @@ def test_a_condition_on_a_checkbox_is_accepted():
                         ConfigField("k", "K", show_if=("on", "true")))
 
 
-def test_a_nested_condition_is_refused():
-    """Each condition is evaluated on its own against its controller's live
-    value, so the inner field shows even while its controller is hidden."""
-    found = problems(
+@pytest.mark.parametrize("spelling", ["yes", "on", "1", "True"])
+def test_a_checkbox_condition_spelled_any_other_way_is_refused(spelling):
+    """A checkbox has no value attribute, so its `.value` reads "on" ticked or
+    not. Comparing against that is how a condition on one meant a field that
+    could never appear."""
+    found = problems(ConfigField("on", "On", type="bool"),
+                     ConfigField("k", "K", show_if=("on", spelling)))
+    assert "can never match" in found
+
+
+def test_a_chain_of_conditions_is_accepted():
+    """A branch may have sub-branches: the page resolves a field's controller
+    before the field, so one whose controller is hidden is hidden too."""
+    assert not problems(
         ConfigField("mode", "Mode", type="select", choices=("a", "b")),
         ConfigField("sub", "Sub", type="select", choices=("x", "y"), show_if=("mode", "a")),
         ConfigField("leaf", "Leaf", show_if=("sub", "x")),
     )
-    assert "is itself conditional" in found
+
+
+def test_a_loop_of_conditions_is_refused():
+    """Chaining resolves; a loop has no starting point to resolve from."""
+    found = problems(ConfigField("a", "A", show_if=("b", "1")),
+                     ConfigField("b", "B", show_if=("a", "1")))
+    assert "form a loop" in found
+
+
+def test_a_longer_loop_is_refused_too():
+    found = problems(ConfigField("a", "A", show_if=("b", "1")),
+                     ConfigField("b", "B", show_if=("c", "1")),
+                     ConfigField("c", "C", show_if=("a", "1")))
+    assert "form a loop" in found
+
+
+def test_one_loop_is_reported_once():
+    """Every field in it would otherwise report the same loop."""
+    found = field_problems([ConfigField("a", "A", show_if=("b", "1")),
+                            ConfigField("b", "B", show_if=("a", "1"))])
+    assert len(found) == 1
+
+
+def test_several_accepted_values_are_allowed():
+    assert not problems(ConfigField("mode", "Mode", type="select", choices=("a", "b", "c")),
+                        ConfigField("k", "K", show_if=("mode", ("a", "c"))))
+
+
+def test_waiting_for_a_value_the_select_never_offers_is_refused():
+    """The field could never appear, and nothing would ever say why."""
+    found = problems(ConfigField("mode", "Mode", type="select", choices=("a", "b")),
+                     ConfigField("k", "K", show_if=("mode", "z")))
+    assert "can never appear" in found
+
+
+def test_a_condition_naming_no_value_at_all_is_refused():
+    assert "names no value to match" in problems(
+        ConfigField("mode", "Mode", type="select", choices=("a",)),
+        ConfigField("k", "K", show_if=("mode", ())))
+
+
+@pytest.mark.parametrize("kind", ["multiselect", "textarea"])
+def test_a_condition_on_a_field_with_no_single_value_is_refused(kind):
+    found = problems(ConfigField("many", "Many", type=kind),
+                     ConfigField("k", "K", show_if=("many", "x")))
+    assert "no single value to compare against" in found
+
+
+def test_show_if_values_normalises_both_spellings():
+    assert show_if_values(ConfigField("k", "K", show_if=("m", "a"))) == ["a"]
+    assert show_if_values(ConfigField("k", "K", show_if=("m", ("a", "b")))) == ["a", "b"]
+    assert show_if_values(ConfigField("k", "K")) == []
 
 
 def test_a_self_referential_condition_is_refused():

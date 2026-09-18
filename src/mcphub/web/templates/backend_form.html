@@ -42,16 +42,30 @@
   {% endif %}
 
   {% for item in fields %}
-  <div class="field"
+  {% if item.field.group and (loop.first or loop.previtem.field.group != item.field.group) %}
+  <h2 class="group" data-group="{{ item.field.group }}">{{ item.field.group }}</h2>
+  {% endif %}
+  {# Single-quoted because tojson emits double quotes and escapes apostrophes. #}
+  <div class="field" data-field-key="{{ item.field.key }}"
+       {% if item.field.group %}data-group="{{ item.field.group }}"{% endif %}
        {% if item.field.show_if %}data-show-if-field="{{ item.field.show_if[0] }}"
-       data-show-if-value="{{ item.field.show_if[1] }}"{% endif %}>
+       data-show-if-value='{{ item.wanted|tojson }}'{% endif %}>
     {% if item.field.type == "select" %}
       <label for="f-{{ item.field.key }}">{{ item.field.label }}</label>
       <div class="select-wrap">
         <select id="f-{{ item.field.key }}" name="{{ item.field.key }}">
-          {% for value, label in item.choices %}
-          <option value="{{ value }}" {% if item.value|string == value %}selected{% endif %}>{{ label }}</option>
-          {% endfor %}
+          {% if item.field.choices_from_plugin %}
+            {% if not item.options %}
+            <option value="">{% if row %}Could not reach the server to list these{% else %}Save this backend first, then come back to choose{% endif %}</option>
+            {% endif %}
+            {% for opt in item.options %}
+            <option value="{{ opt.value }}" {% if item.value|string == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+            {% endfor %}
+          {% else %}
+            {% for value, label in item.choices %}
+            <option value="{{ value }}" {% if item.value|string == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          {% endif %}
         </select>
       </div>
     {% elif item.field.type == "multiselect" %}
@@ -137,6 +151,25 @@
   </div>
   {% endfor %}
 
+  {# Saved values with no field left to draw them. For a launched server these #}
+  {# are still handed to it on every start, so they are not merely clutter —    #}
+  {# they are settings in force that nothing on the page would otherwise admit. #}
+  {% if orphans %}
+  <div class="field">
+    <label>Stored, but no longer asked for</label>
+    <p class="help">This server no longer declares these, so there is no box to edit them in —
+      but they are still saved, and a launched server is still started with them. Tick one to
+      let it go.</p>
+    {% for key in orphans %}
+    <div class="checkline" style="margin-top:6px">
+      <input type="checkbox" id="clear-{{ key }}" name="clear_{{ key }}">
+      <label for="clear-{{ key }}"><span class="mono">{{ key }}</span>
+        <span class="note">— saved, value not shown</span></label>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <div class="field">
     <div class="checkline">
       <input type="checkbox" id="enabled" name="enabled" {% if enabled %}checked{% endif %}>
@@ -147,11 +180,42 @@
 
   <div class="actions">
     <button class="primary" type="submit">Save</button>
+    {# Tests what is in the boxes, not what is stored. On a new backend there #}
+    {# is nothing stored to test, which is exactly when it is most useful.    #}
+    <button type="button" class="test-typed" data-slug="{{ original_slug }}">Test</button>
     <a class="btn" href="/">Cancel</a>
+    <span class="result" id="test-result"></span>
   </div>
 </form>
 
 <script>
+// Test what is typed. The whole form goes up, including a secret left blank to
+// keep its stored value — the server merges that back in the same way a save
+// does, so what is tested is what saving would store.
+document.querySelectorAll("button.test-typed").forEach(function (btn) {
+  var form = btn.closest("form");
+  var out = document.getElementById("test-result");
+  btn.addEventListener("click", async function () {
+    btn.disabled = true;
+    out.className = "result";
+    out.textContent = "Testing\u2026";
+    try {
+      var res = await fetch("/backends/" + encodeURIComponent(btn.dataset.slug) + "/test", {
+        method: "POST",
+        body: new URLSearchParams(new FormData(form)),
+      });
+      var data = await res.json();
+      out.className = "result " + (data.ok ? "ok" : "bad");
+      out.textContent = data.detail;
+    } catch (err) {
+      out.className = "result bad";
+      out.textContent = "Test failed: " + err;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+});
+
 document.querySelectorAll(".picker").forEach(function (picker) {
   var group = picker.dataset.group;
   var boxes = picker.querySelectorAll("input[type=checkbox]");
