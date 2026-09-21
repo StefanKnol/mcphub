@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import time
 
 from starlette.requests import Request
@@ -44,6 +45,26 @@ def end_session(db: Database, request: Request, response: Response) -> None:
     if token:
         db.execute("DELETE FROM web_sessions WHERE token_hash = ?", (hash_token(token),))
     response.delete_cookie(COOKIE_NAME, path="/")
+
+
+def csrf_token(request: Request) -> str:
+    """A value for a form that acts on the session rather than on a password.
+
+    Derived from the session cookie, which is `httponly`, so a page on another
+    site cannot read it and therefore cannot forge the form. Nothing to store
+    and nothing to expire: it dies with the session it came from.
+
+    The sign-in form needs none of this — an attacker who could forge it would
+    already need the password — but the consent form is one click away from an
+    authorization code, and a click is exactly what another site can arrange.
+    """
+    token = request.cookies.get(COOKIE_NAME)
+    return hash_token(f"csrf:{token}") if token else ""
+
+
+def csrf_ok(request: Request, submitted: str) -> bool:
+    expected = csrf_token(request)
+    return bool(expected) and hmac.compare_digest(expected, submitted or "")
 
 
 def current_user(db: Database, request: Request) -> dict[str, object] | None:

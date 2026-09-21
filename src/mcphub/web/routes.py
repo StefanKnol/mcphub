@@ -38,7 +38,7 @@ from ..plugins.base import (
     show_if_values,
     as_field_errors,
 )
-from .session import current_user, end_session, start_session
+from .session import csrf_ok, csrf_token, current_user, end_session, start_session
 from .uiproxy import check as check_ui
 from .uiproxy import forward as proxy_ui
 from .uiproxy import forward_socket as proxy_socket
@@ -71,6 +71,11 @@ RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz
                   # The hub's own backend. Reserved so nothing else can take the
                   # name, and kept by the one thing that is allowed to have it.
                   HUB_SLUG}
+
+
+def _no_grant(slug: str) -> str:
+    return (f"This account has not been granted access to the {slug!r} backend. "
+            "Ask an administrator to grant it, then connect again.")
 
 
 def _initials(title: str) -> str:
@@ -549,16 +554,22 @@ def build(hub: Any) -> list[Route]:
     # ── authentication ────────────────────────────────────────────────────
 
     async def login(request: Request) -> Response:
-        """Serves both the UI sign-in and the OAuth consent step.
+        """Serves the UI sign-in, and the consent step of an OAuth hop.
 
-        `?req=` marks an OAuth authorization parked by the provider: after a
-        successful sign-in the browser is sent on to the MCP client's redirect
-        URI with a fresh authorization code, rather than to the dashboard.
+        `?req=` marks an authorization parked by the provider. Someone already
+        signed in is asked to allow it rather than to sign in again: their
+        password is not what the hop needs, and asking for it again teaches
+        people to type it at whatever asks.
+
+        Consent is still asked for every time. Silently minting a code for
+        whatever started a flow would let any page the browser visits get a
+        connector authorised without anyone agreeing to it.
         """
         auth_request = request.query_params.get("req")
         next_url = request.query_params.get("next", "/")
         pending = hub.provider.get_pending(auth_request) if auth_request else None
         client_name = None
+        wanted = None
         if auth_request:
             if pending is None:
                 return render(request, "login.html", error=(
@@ -566,18 +577,69 @@ def build(hub: Any) -> list[Route]:
                 ), auth_request=None, next_url="/", client_name=None, status_code=400)
             client = await hub.provider.get_client(pending.client_id)
             client_name = (client.client_name if client else None) or pending.client_id
+            wanted = _resource_slug(pending.params.resource)
+
+        def refused(message: str) -> Response:
+            return render(request, "login.html", error=message, auth_request=None,
+                          next_url="/", client_name=client_name, status_code=403)
+
+        def ask(user: dict[str, Any]) -> Response:
+            """The consent screen, for an account that is already signed in."""
+            row = hub.backend_row(wanted) if wanted else None
+            return render(request, "consent.html", client_name=client_name,
+                          username=user["username"], auth_request=auth_request,
+                          backend=row["title"] if row else None, slug=wanted,
+                          level=level_for(user, wanted) if wanted else None,
+                          endpoint=f"{hub.settings.public_url}/mcp/{wanted}" if wanted else None,
+                          csrf=csrf_token(request))
 
         if request.method == "GET":
             user = current_user(hub.db, request)
-            # Already signed in and this is an OAuth hop: still show the
-            # consent screen. Silently minting a token for whatever asked
-            # would let any page start a flow the user never agreed to.
             if user and not auth_request:
                 return RedirectResponse(next_url, status_code=303)
+            if user and auth_request:
+                if request.query_params.get("switch"):
+                    # Asked for a different account: end this session first, or
+                    # the consent screen would come straight back.
+                    response = render(request, "login.html", error=None,
+                                      auth_request=auth_request, next_url=next_url,
+                                      client_name=client_name)
+                    end_session(hub.db, request, response)
+                    return response
+                if wanted and not may_use(user, wanted):
+                    return refused(_no_grant(wanted))
+                return ask(user)
             return render(request, "login.html", error=None, auth_request=auth_request,
                           next_url=next_url, client_name=client_name)
 
         form = await request.form()
+
+        # ── consent from an account that is already signed in ──────────────
+        if auth_request and form.get("consent"):
+            user = current_user(hub.db, request)
+            if not user:
+                return render(request, "login.html", error=(
+                    "That session ended while you were deciding. Sign in to continue."
+                ), auth_request=auth_request, next_url=next_url,
+                    client_name=client_name, status_code=401)
+            if not csrf_ok(request, str(form.get("csrf", ""))):
+                # Another site can arrange a click; it cannot read the session
+                # cookie this token comes from.
+                log.warning("consent for %r rejected: the form did not come from here",
+                            client_name)
+                return refused("That request did not come from this page. Start the "
+                               "connection again from your MCP client.")
+            if str(form.get("consent")) != "allow":
+                elsewhere = hub.provider.deny_authorization(auth_request)
+                return RedirectResponse(elsewhere or "/", status_code=303)
+            if wanted and not may_use(user, wanted):
+                return refused(_no_grant(wanted))
+            log.info("account %r authorised %r for backend %s",
+                     user["username"], client_name, wanted or "the hub")
+            return RedirectResponse(hub.provider.complete_authorization(auth_request, user["id"]),
+                                    status_code=303)
+
+        # ── signing in, with or without an authorization waiting ───────────
         username = str(form.get("username", "")).strip()
         password = str(form.get("password", ""))
         remember = form.get("remember") is not None
@@ -591,12 +653,8 @@ def build(hub: Any) -> list[Route]:
             # Refuse here rather than minting a token that every MCP request
             # would then reject: a connector that appears to authorise and then
             # fails on use is a much worse thing to debug than a refusal now.
-            wanted = _resource_slug(pending.params.resource if pending else None)
             if wanted and not may_use({"id": user_id}, wanted):
-                return render(request, "login.html", error=(
-                    f"This account has not been granted access to the {wanted!r} backend. "
-                    "Ask an administrator to grant it, then connect again."
-                ), auth_request=None, next_url="/", client_name=client_name, status_code=403)
+                return refused(_no_grant(wanted))
 
             redirect_url = hub.provider.complete_authorization(auth_request, user_id)
             response = RedirectResponse(redirect_url, status_code=303)

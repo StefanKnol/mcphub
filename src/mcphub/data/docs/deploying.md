@@ -71,7 +71,10 @@ RUN pip install --no-cache-dir dictionary-mcphub-plugin
 ## Connecting a client
 
 Add `https://your-hub/mcp/<slug>` as a custom connector. The client discovers
-the authorization server, registers itself, and sends you to the hub's sign-in.
+the authorization server, registers itself, and opens the hub. A browser that is
+already signed in gets a consent screen and one **Allow**; one that is not is
+asked to sign in first. Either way consent is asked every time.
+
 The token it gets is bound to that one backend — replayed against another
 backend on the same hub, it is refused.
 

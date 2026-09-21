@@ -272,8 +272,23 @@ reach it.
 The grant is checked **on every request**, not when the token was issued, so
 removing access cuts off an existing connector at once rather than whenever its
 token happens to expire. Authorising a connector for a backend an account has
-not been granted is refused at sign-in, with the reason, instead of succeeding
-and then failing on use.
+not been granted is refused at that point, with the reason, instead of
+succeeding and then failing on use.
+
+#### Authorising a connector
+
+A browser that is already signed in is shown a consent screen — what is asking,
+which backend, which account, at which level — and one **Allow**. It is not
+asked for the password again: the password is not what that hop needs, and
+asking for it every time teaches people to type it at whatever page an app
+opens.
+
+Consent itself is asked every time. Silently completing a parked authorization
+would let any page the browser visits get a connector authorised without anyone
+agreeing to it. The form carries a token derived from the session cookie, which
+is `httponly`, so another site can arrange the click but cannot forge the form.
+**Cancel** sends the client back an `access_denied` rather than leaving it
+waiting on a window that never returns.
 
 #### Levels
 

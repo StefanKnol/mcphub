@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Authorize {{ client_name }} — mcphub{% endblock %}
+{% block body %}
+<div class="card" style="max-width:460px;margin:40px auto">
+  <h1>Allow {{ client_name }}?</h1>
+  <p class="sub">
+    {% if backend %}It is asking to connect to <strong>{{ backend }}</strong>.
+    {% else %}It is asking to connect to this hub.{% endif %}
+  </p>
+
+  <div class="field">
+    <table>
+      <tr><td>Account</td><td><span class="mono">{{ username }}</span></td></tr>
+      {% if slug %}
+      <tr><td>Backend</td><td><span class="mono">{{ slug }}</span></td></tr>
+      <tr><td>Level</td><td><span class="pill">{{ level }}</span></td></tr>
+      {% endif %}
+    </table>
+    {% if endpoint %}
+    <p class="help">The token it gets is bound to <code>{{ endpoint }}</code> and is refused
+      anywhere else on this hub. Revoke it by removing this account's grant, which takes
+      effect on the connector's next request.</p>
+    {% else %}
+    <p class="help">The token it gets is bound to this hub.</p>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/login?req={{ auth_request }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="actions">
+      <button class="primary" type="submit" name="consent" value="allow">Allow</button>
+      <button type="submit" name="consent" value="deny">Cancel</button>
+    </div>
+  </form>
+
+  <p class="help" style="margin-top:14px">Signed in as <span class="mono">{{ username }}</span>.
+    <a href="/login?req={{ auth_request }}&amp;switch=1">Use a different account</a> — this signs
+    you out of the hub in this browser first.</p>
+</div>
+{% endblock %}

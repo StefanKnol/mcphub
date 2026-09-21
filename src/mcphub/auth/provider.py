@@ -163,7 +163,27 @@ class HubOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refre
             ),
         )
 
-        query: dict[str, Any] = {"code": code}
+        return self._redirect(params, {"code": code})
+
+    def deny_authorization(self, request_id: str) -> str | None:
+        """Drop a parked request and return where to send the browser instead.
+
+        RFC 6749 says a refusal goes back to the client as `access_denied`. The
+        alternative — dropping it and showing a page here — leaves the client
+        waiting on a window that will never come back, which it can only end by
+        timing out.
+        """
+        pending = self.get_pending(request_id)
+        if pending is None:
+            return None
+        self._pending.pop(request_id, None)
+        return self._redirect(pending.params, {
+            "error": "access_denied",
+            "error_description": "The person signed in here did not authorize this connection.",
+        })
+
+    @staticmethod
+    def _redirect(params: AuthorizationParams, query: dict[str, Any]) -> str:
         if params.state is not None:
             query["state"] = params.state
         sep = "&" if "?" in str(params.redirect_uri) else "?"
