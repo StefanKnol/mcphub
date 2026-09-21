@@ -172,3 +172,82 @@ async def forward(request: Request, upstream_base: str, prefix: str) -> Response
     out.setdefault("cache-control", "no-store")
 
     return Response(content=content, status_code=upstream.status_code, headers=out)
+
+
+ASSET_REF = re.compile(
+    rb"""\s(?:src|href)\s*=\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+
+EXPECTED_TYPE = {
+    ".css": "text/css",
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".json": "json",
+    ".png": "image/", ".jpg": "image/", ".jpeg": "image/",
+    ".svg": "image/", ".gif": "image/", ".webp": "image/", ".ico": "image",
+    ".woff": "font", ".woff2": "font",
+}
+
+
+async def check(upstream_base: str, prefix: str, transport: object = None) -> dict[str, object]:
+    """Fetch an interface and report what would stop it working through here.
+
+    Written because the browser's own error is unhelpful: an asset answered
+    with the hub's 404 page is refused by Cross-Origin Read Blocking, and the
+    message names the stylesheet rather than the path that missed. This says
+    which asset, and what came back instead.
+    """
+    findings: list[str] = []
+    try:
+        # `transport` is a seam for tests; production passes nothing.
+        options = {"transport": transport} if transport is not None else {}
+        async with httpx2.AsyncClient(timeout=TIMEOUT, follow_redirects=True, **options) as client:
+            page = await client.get(upstream_base)
+            body, page_type = page.content, page.headers.get("content-type", "")
+
+            if page.status_code != 200:
+                return {"ok": False,
+                        "detail": f"{upstream_base} answered {page.status_code}."}
+
+            if "set-cookie" in {k.lower() for k in page.headers}:
+                findings.append(
+                    "it sets a cookie — the sandbox gives it an origin of its own, so "
+                    "cookies will not persist and any login of its own will not work")
+
+            refs = [r.decode("utf-8", "replace") for r in ASSET_REF.findall(body[:200_000])]
+            local = [r for r in refs if not r.startswith(("http://", "https://", "//", "#", "data:", "mailto:"))]
+            root_absolute = [r for r in local if r.startswith("/")]
+            if root_absolute:
+                findings.append(
+                    f"{len(root_absolute)} asset reference(s) start at the root and are "
+                    "rewritten under the mount; anything a script builds at runtime is not, "
+                    "so honour the X-Forwarded-Prefix header for those")
+
+            # The case that actually bites: an asset that answers with a page.
+            broken: list[str] = []
+            for ref in local[:12]:
+                suffix = "." + ref.rsplit(".", 1)[-1].split("?")[0].lower() if "." in ref else ""
+                expected = EXPECTED_TYPE.get(suffix)
+                if not expected:
+                    continue
+                try:
+                    asset = await client.get(urljoin(upstream_base.rstrip("/") + "/", ref.lstrip("/")))
+                except httpx2.HTTPError:
+                    broken.append(f"{ref} (unreachable)")
+                    continue
+                got = asset.headers.get("content-type", "")
+                if asset.status_code != 200 or expected not in got:
+                    broken.append(f"{ref} -> {asset.status_code} {got or 'no type'}")
+            if broken:
+                findings.append(
+                    "these answer with something other than what they claim to be, which the "
+                    "browser refuses as CORB: " + "; ".join(broken[:4]))
+
+    except httpx2.ConnectError as exc:
+        return {"ok": False, "detail": f"Could not reach {upstream_base}: {exc}"}
+    except httpx2.HTTPError as exc:
+        return {"ok": False, "detail": f"{upstream_base} failed: {exc}"}
+
+    if not findings:
+        return {"ok": True,
+                "detail": f"Reachable, and nothing found that would stop it working at {prefix}."}
+    return {"ok": True, "detail": "Reachable, with caveats — " + "; ".join(findings)}

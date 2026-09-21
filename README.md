@@ -217,6 +217,24 @@ The cost is symmetrical: an opaque origin has no cookies, so an interface with
 its own login cannot authenticate through here. For one with no login — the
 case this exists for — that costs nothing.
 
+#### What a proxied interface has to do
+
+Four things, and the **Check UI** button on the backend's card verifies them
+against the running interface rather than leaving you to find out from a
+browser error:
+
+1. **No login of its own.** The sandbox gives the page an origin of its own, so
+   its cookies do not persist. An interface with no login — the case this is
+   for — loses nothing.
+2. **Serve assets as what they are.** A stylesheet answered with `text/html`
+   is refused by the browser as CORB, and the error names the stylesheet rather
+   than the type. An app that answers unknown paths with its index page
+   produces exactly this.
+3. **Relative asset paths, or honour `X-Forwarded-Prefix`.** Root-absolute
+   references in markup are rewritten under the mount; URLs a script builds at
+   runtime cannot be, so those need the header, which is sent on every request.
+4. **No WebSockets**, which are not proxied.
+
 Asset paths are handled two ways: a `<base>` is injected so relative references
 resolve under the mount, and root-absolute ones in markup (`href="/styles.css"`,
 `url(/img.png)` in CSS) are rewritten to point at it. URLs a script builds at

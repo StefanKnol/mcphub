@@ -32,6 +32,7 @@ from ..plugins.base import (
     as_field_errors,
 )
 from .session import current_user, end_session, start_session
+from .uiproxy import check as check_ui
 from .uiproxy import forward as proxy_ui
 from .uiproxy import is_proxyable
 
@@ -1173,6 +1174,24 @@ def build(hub: Any) -> list[Route]:
 
         return await proxy_ui(request, target, f"/ui/{slug}/")
 
+    async def backend_ui_check(request: Request) -> Response:
+        """Report what would stop a backend's interface working through the hub."""
+        user = require_user(request)
+        slug = request.path_params["slug"]
+        if not user:
+            return JSONResponse({"ok": False, "detail": "Not signed in."}, status_code=401)
+        if not may_manage_backends(user):
+            return JSONResponse({"ok": False, "detail": "This account cannot configure backends."},
+                                status_code=403)
+        row = hub.backend_row(slug)
+        if row is None:
+            return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
+
+        target = str(hub.instance_from_row(row).get("ui_url", "") or "").strip()
+        if not target or not is_proxyable(target):
+            return JSONResponse({"ok": False, "detail": "No web interface is configured."})
+        return JSONResponse(await check_ui(target, f"/ui/{slug}/"))
+
     async def backend_ui_root(request: Request) -> Response:
         # The bare mount has no trailing slash, so every relative link on the
         # page would resolve one level too high. Redirecting once fixes the lot.
@@ -1305,6 +1324,7 @@ def build(hub: Any) -> list[Route]:
         Route("/backends/{slug}/versions", backend_versions),
         Route("/backends/{slug}/pin", backend_pin, methods=["POST"]),
         Route("/backends/{slug}/delete", backend_delete, methods=["POST"]),
+        Route("/backends/{slug}/ui-check", backend_ui_check, methods=["POST"]),
         Route("/ui/{slug}", backend_ui_root),
         Route("/ui/{slug}/", backend_ui, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
         Route("/ui/{slug}/{path:path}", backend_ui,

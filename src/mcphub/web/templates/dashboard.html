@@ -51,6 +51,8 @@ connector so their tools stay in separate lists.</p>
         {% endif %}
         {% if can_manage %}<a class="btn" href="/backends/{{ b.slug }}">Settings</a>{% endif %}
         <button type="button" class="test" data-slug="{{ b.slug }}">Test</button>
+        {% if can_manage and b.ui_url %}<button type="button" class="uicheck" data-slug="{{ b.slug }}"
+          title="Fetch the interface and report anything that would stop it working through the hub">Check UI</button>{% endif %}
         {% if can_manage %}<button type="button" class="refresh" data-slug="{{ b.slug }}"
           title="Relaunch the server and re-read the tools it offers. A launched server resolves its package again on start, so this is what picks up a new release.">Update</button>{% endif %}
         {% if b.pinnable %}
@@ -129,6 +131,7 @@ wire("button.test", "/test", "Testing\u2026", "Test failed");
 // Relaunching can take a while: an unpinned package is resolved again, and a
 // new release has to be downloaded before the server will start.
 wire("button.refresh", "/refresh", "Relaunching and re-reading\u2026", "Update failed");
+wire("button.uicheck", "/ui-check", "Checking the interface\u2026", "Check failed");
 
 // The version each account runs, which is theirs alone: picking one here does
 // not move anyone else, and the hub runs both if two accounts differ.

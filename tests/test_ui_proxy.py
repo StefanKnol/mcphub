@@ -142,3 +142,53 @@ def test_rewriting_does_not_touch_arbitrary_slashes():
     """Only URL-bearing attributes, so prose and data survive."""
     body = b'<p>use /etc/hosts</p><div data-note="/not/a/url">'
     assert _rewrite_root_absolute(body, "/ui/a/") == body
+
+
+# ── the compatibility check ───────────────────────────────────────────────
+# Written because the browser's own error is unhelpful: an asset answered with
+# a page is refused as CORB, and the message names the asset rather than the
+# path that missed.
+
+import httpx2  # noqa: E402
+
+from mcphub.web.uiproxy import check  # noqa: E402
+
+
+def serving_ui(handler):
+    return httpx2.MockTransport(handler)
+
+
+async def test_an_interface_with_nothing_wrong_says_so():
+    page = b'<html><head><link href="styles.css"></head></html>'
+
+    def handler(request):
+        if request.url.path.endswith("styles.css"):
+            return httpx2.Response(200, content=b"h1{}", headers={"content-type": "text/css"})
+        return httpx2.Response(200, content=page, headers={"content-type": "text/html"})
+
+    result = await check("http://ui.test", "/ui/a/", serving_ui(handler))
+    assert result["ok"] and "nothing found" in result["detail"]
+
+
+async def test_an_asset_answered_with_a_page_is_named():
+    """The CORB case, reported as the asset and what came back instead."""
+    page = b'<html><head><link href="/app.css"></head></html>'
+    result = await check("http://ui.test", "/ui/a/", serving_ui(
+        lambda r: httpx2.Response(200, content=page, headers={"content-type": "text/html"})))
+    assert "CORB" in result["detail"]
+    assert "/app.css" in result["detail"]
+
+
+async def test_an_interface_that_sets_a_cookie_is_flagged():
+    """Its own login cannot work in an origin that has no cookies."""
+    result = await check("http://ui.test", "/ui/a/", serving_ui(
+        lambda r: httpx2.Response(200, content=b"<html></html>",
+                                  headers={"content-type": "text/html", "set-cookie": "s=1"})))
+    assert "cookie" in result["detail"]
+
+
+async def test_an_unreachable_interface_reports_failure():
+    def handler(request):
+        raise httpx2.ConnectError("refused")
+
+    assert (await check("http://ui.test", "/ui/a/", serving_ui(handler)))["ok"] is False
