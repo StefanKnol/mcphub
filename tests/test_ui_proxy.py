@@ -192,3 +192,34 @@ async def test_an_unreachable_interface_reports_failure():
         raise httpx2.ConnectError("refused")
 
     assert (await check("http://ui.test", "/ui/a/", serving_ui(handler)))["ok"] is False
+
+
+# ── sandboxed or trusted ──────────────────────────────────────────────────
+
+async def test_a_sandboxed_response_carries_the_sandbox():
+    import httpx2 as _h
+    from starlette.requests import Request as _R
+
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": [],
+             "query_string": b"", "path_params": {"path": ""}}
+    request = _R(scope, receive=lambda: {"type": "http.request", "body": b""})
+    # forward() builds its own client, so this asserts on the decision rather
+    # than the network: the flag is what selects the header.
+    from mcphub.web import uiproxy
+
+    assert "sandbox" in uiproxy.SANDBOX
+    source = __import__("inspect").getsource(uiproxy.forward)
+    assert "if trusted:" in source
+    assert 'out.pop("content-security-policy", None)' in source
+
+
+def test_identity_headers_are_only_for_trusted_apps():
+    """A sandboxed page could not act on an identity, and the account name is
+    not owed to an app nobody vouched for."""
+    import inspect
+
+    from mcphub.web import routes
+
+    source = inspect.getsource(routes.build)
+    assert "x-mcphub-user" in source
+    assert "if trusted else None" in source

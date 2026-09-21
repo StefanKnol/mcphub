@@ -1172,7 +1172,16 @@ def build(hub: Any) -> list[Route]:
                           message=f"{row['title']}'s interface is set to be opened directly, "
                                   "not served through the hub.", status_code=404)
 
-        return await proxy_ui(request, target, f"/ui/{slug}/")
+        trusted = bool(instance.config.get("ui_trusted"))
+        # Only a trusted app is told who is signed in. Handing an identity to a
+        # sandboxed page would be pointless anyway — it cannot act on it — and
+        # would leak the account name to something not vouched for.
+        identity = {
+            "x-mcphub-user": str(user["username"]),
+            "x-mcphub-admin": "1" if is_admin(user) else "0",
+        } if trusted else None
+        return await proxy_ui(request, target, f"/ui/{slug}/",
+                              trusted=trusted, identity=identity)
 
     async def backend_ui_check(request: Request) -> Response:
         """Report what would stop a backend's interface working through the hub."""

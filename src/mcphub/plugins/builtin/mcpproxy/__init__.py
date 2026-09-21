@@ -230,6 +230,20 @@ class McpProxyPlugin(PluginDefaults):
                 "Turn this off to simply link to the address above instead."
             ),
         ),
+        ConfigField(
+            "ui_trusted", "This is an app I control", type="bool", default=False, required=False,
+            help=(
+                "Serves the interface on the hub's own origin instead of sandboxing it. "
+                "An app with module scripts, its own login, or anything fetched with CORS "
+                "needs this — a sandboxed page has an origin of its own, which makes every "
+                "asset a cross-origin request and every cookie unavailable. "
+                "The cost is real: on the hub's origin, the app's JavaScript can call the "
+                "hub's own endpoints as whoever is signed in. Tick it only for an app you "
+                "wrote or would trust with your administrator session. "
+                "Trusted apps are also sent the signed-in account in X-Mcphub-User, so they "
+                "can use this hub's accounts instead of having their own."
+            ),
+        ),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),
         ConfigField(
             ALLOW_KEY, "Tools to expose", type="multiselect", required=False,

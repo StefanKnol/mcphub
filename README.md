@@ -217,6 +217,37 @@ The cost is symmetrical: an opaque origin has no cookies, so an interface with
 its own login cannot authenticate through here. For one with no login — the
 case this exists for — that costs nothing.
 
+#### Sandboxed, or trusted
+
+There are two ways to serve an interface, and the difference is who you are
+protecting yourself from.
+
+**Sandboxed** (the default) gives the page an origin of its own, which is what
+stops its JavaScript acting as the signed-in administrator. The cost is not
+cosmetic: every asset it requests is then a cross-origin request carrying no
+cookies, so an ES module (always fetched in CORS mode), anything using `fetch`,
+and any login of its own will not work. No response header fixes that — it is
+what an opaque origin means. Use it for an app you did not write.
+
+**This is an app I control** serves it on the hub's own origin instead.
+Modules, cookies and CORS all work because nothing is cross-origin any more.
+In exchange the app's JavaScript can call the hub's own endpoints as whoever is
+signed in, so tick it only for an app you would trust with your administrator
+session.
+
+A trusted app is also sent who is signed in:
+
+| Header | |
+| --- | --- |
+| `X-Mcphub-User` | the account name |
+| `X-Mcphub-Admin` | `1` or `0` |
+| `X-Forwarded-Prefix` | where it is mounted |
+
+Which means an app you control does not need a login at all: the hub
+authenticates, checks the grant, and tells the app who it is talking to. A
+sandboxed app is told none of this — it could not act on it, and the account
+name is not owed to something unvouched for.
+
 #### What a proxied interface has to do
 
 Four things, and the **Check UI** button on the backend's card verifies them

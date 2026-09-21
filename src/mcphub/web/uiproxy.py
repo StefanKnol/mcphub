@@ -100,8 +100,22 @@ def _inject_base(body: bytes, prefix: str) -> bytes:
     return tag + body
 
 
-async def forward(request: Request, upstream_base: str, prefix: str) -> Response:
-    """Pass one request to the upstream UI and return its response."""
+async def forward(request: Request, upstream_base: str, prefix: str, *,
+                  trusted: bool = False, identity: dict[str, str] | None = None) -> Response:
+    """Pass one request to the upstream UI and return its response.
+
+    `trusted` decides the one thing that matters here. A sandboxed interface
+    gets an origin of its own, which is what stops its scripts acting as the
+    signed-in administrator — but it also makes every asset a cross-origin
+    request with no cookies, and an ES module (always fetched in CORS mode) or
+    anything using `fetch` will not load at all. There is no header that fixes
+    that; it is what an opaque origin means.
+
+    So an app the administrator vouches for is served on the hub's own origin
+    instead, and is sent the signed-in account so it can use these accounts
+    rather than keeping its own. That is a real grant of authority, made
+    deliberately, rather than a default that quietly breaks things.
+    """
     path = request.path_params.get("path", "")
     target = urljoin(upstream_base.rstrip("/") + "/", path.lstrip("/"))
     if request.url.query:
@@ -110,6 +124,8 @@ async def forward(request: Request, upstream_base: str, prefix: str) -> Response
     headers = {k: v for k, v in request.headers.items() if k.lower() not in STRIP_REQUEST}
     # Identify the mount, so an upstream that can use it builds correct links.
     headers["x-forwarded-prefix"] = prefix.rstrip("/")
+    for key, value in (identity or {}).items():
+        headers[key] = value
 
     body = await request.body()
     if len(body) > MAX_BYTES:
@@ -155,7 +171,14 @@ async def forward(request: Request, upstream_base: str, prefix: str) -> Response
         if not parsed.scheme and location.startswith("/"):
             out["location"] = prefix.rstrip("/") + location
 
-    out["content-security-policy"] = SANDBOX
+    if trusted:
+        # No sandbox: the app runs on this origin, which is what lets its
+        # modules, cookies and CORS requests work at all. It can also reach
+        # every endpoint here as the signed-in account, which is the trade the
+        # administrator made when ticking the box.
+        out.pop("content-security-policy", None)
+    else:
+        out["content-security-policy"] = SANDBOX
     # Deliberately *not* adding `nosniff`. The sandbox puts this page in an
     # opaque origin, so every asset it asks for is a cross-origin request, and
     # Cross-Origin Read Blocking then refuses any response whose declared type
