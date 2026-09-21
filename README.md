@@ -54,57 +54,6 @@ Sign in, change it, add a backend, then paste the endpoint URL shown on the
 dashboard into Claude as a custom connector. Claude registers itself, you sign
 in, and you approve the connection.
 
-### Deploying
-
-Every push to `main` runs the test suite and, if it passes, builds a
-multi-arch image (amd64 + arm64) and pushes it to your container registry.
-Tags matching `v*` also publish semver tags. Pull requests build the image to
-prove the Dockerfile still works, but do not push.
-
-Repository secrets drive it — the registry host included, so nothing about
-your infrastructure lives in the workflow:
-
-| Secret | Required | Value |
-| --- | --- | --- |
-| `DOCKER_REGISTRY` | yes | Registry host, e.g. `registry.example.com`. |
-| `DOCKER_USERNAME` | yes | Registry account. |
-| `DOCKER_PASSWORD` | yes | Registry password or access token. Prefer a token where the registry supports one. |
-| `DOCKER_IMAGE` | no | Full image path when the registry needs a namespace, e.g. `registry.example.com/homelab/mcphub`. Defaults to `<DOCKER_REGISTRY>/mcphub`. |
-
-```bash
-gh secret set DOCKER_REGISTRY
-gh secret set DOCKER_USERNAME
-gh secret set DOCKER_PASSWORD
-```
-
-Two things the runner needs, both easy to miss:
-
-- **The registry must be reachable from the public internet.** GitHub-hosted
-  runners cannot see a LAN-only registry. If yours is internal, use a
-  self-hosted runner on that network instead.
-- **Its TLS certificate must chain to a public CA.** A private CA or a
-  self-signed certificate will fail the login on a hosted runner.
-
-#### On Unraid
-
-Add a container with the published image and:
-
-| Setting | Value |
-| --- | --- |
-| Repository | `<user>/mcphub:latest` |
-| Port | `8080` → `8080` |
-| Path | `/mnt/user/appdata/mcphub` → `/data` |
-| Variable | `MCPHUB_PUBLIC_URL` = the URL your reverse proxy serves |
-| Variable | `PUID` = `99`, `PGID` = `100` (defaults; Unraid's `nobody:users`) |
-
-The container starts as root only long enough to align `/data` with
-`PUID`/`PGID`, then drops to that user before running anything. Without that
-step a bind mount owned by someone else fails as
-`sqlite3.OperationalError: unable to open database file`, which says nothing
-about ownership. Pass `--user` to skip it and manage the ownership yourself.
-
-Then point a proxy host at it with a real certificate. The first-run admin
-password is printed once, in the container log.
 
 ### Updating
 
