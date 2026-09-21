@@ -3,7 +3,8 @@
 {% block body %}
 <h1>Accounts</h1>
 <p class="sub">Backends are shared: configured once, then granted out. An account reaches
-only what it has been granted, checked on every request rather than when it signed in.</p>
+only what it has been granted, checked on every request rather than when it signed in.
+Each grant also carries a level, which decides how much of the backend it gets.</p>
 
 {% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
 
@@ -36,19 +37,35 @@ only what it has been granted, checked on every request rather than when it sign
     <div class="field">
       <label>Backends this account may use</label>
       {% if a.is_admin %}
-        <p class="help">An administrator reaches every backend; individual grants do not apply.</p>
+        <p class="help">An administrator reaches every backend at the highest level;
+          individual grants do not apply.</p>
       {% elif backends %}
         <div class="picker">
           {% for b in backends %}
-          <div class="pick">
+          <div class="pick grant">
             <input type="checkbox" id="g-{{ a.id }}-{{ b.slug }}" name="grant" value="{{ b.slug }}"
-                   {% if b.slug in a.grants %}checked{% endif %}>
+                   {% if b.slug in a.levels %}checked{% endif %}>
             <label for="g-{{ a.id }}-{{ b.slug }}">
               <span class="mono">{{ b.slug }}</span><span class="note"> — {{ b.title }}</span>
             </label>
+            <div class="select-wrap">
+              <select name="level-{{ b.slug }}" aria-label="Level on {{ b.slug }}">
+                {% for level in levels %}
+                <option value="{{ level }}" title="{{ level_help[level] }}"
+                  {% if a.levels.get(b.slug, default_level) == level %}selected{% endif %}>{{ level }}</option>
+                {% endfor %}
+              </select>
+            </div>
           </div>
           {% endfor %}
         </div>
+        <ul class="legend">
+          {% for level in levels %}
+          <li><strong>{{ level }}</strong> — {{ level_help[level] }}</li>
+          {% endfor %}
+        </ul>
+        <p class="help">Read off what each tool declares about itself, so a backend
+          that annotates nothing at all offers a viewer nothing at all.</p>
       {% else %}
         <p class="help">No backends exist yet.</p>
       {% endif %}

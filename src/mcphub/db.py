@@ -27,12 +27,18 @@ CREATE TABLE IF NOT EXISTS users (
     created_at       TEXT NOT NULL
 );
 
--- Which accounts may reach which backends. Backends are shared: configured
--- once, granted out. An admin needs no row here — they reach everything, and
--- writing that as data would let a mistake lock everyone out of their own hub.
+-- Which accounts may reach which backends, and how far. Backends are shared:
+-- configured once, granted out. An admin needs no row here — they reach
+-- everything, and writing that as data would let a mistake lock everyone out
+-- of their own hub.
+--
+-- `role` is one of mcphub.roles.LEVELS. It is not a second grant: the row says
+-- whether the account may reach the backend at all, the role says which of its
+-- tools it gets once it is there.
 CREATE TABLE IF NOT EXISTS backend_grants (
     user_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     backend_id INTEGER NOT NULL REFERENCES backends (id) ON DELETE CASCADE,
+    role       TEXT NOT NULL DEFAULT 'user',
     created_at TEXT NOT NULL,
     PRIMARY KEY (user_id, backend_id)
 );
@@ -122,6 +128,12 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("users", "is_admin", "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"),
     ("users", "can_add_backends",
      "ALTER TABLE users ADD COLUMN can_add_backends INTEGER NOT NULL DEFAULT 0"),
+    # Grants that predate levels keep the access they already had, which is
+    # 'user' — everything the backend offers short of what it marks destructive.
+    # Defaulting them to 'viewer' would silently take away tools people were
+    # using; to 'admin' would silently hand out ones they never had.
+    ("backend_grants", "role",
+     "ALTER TABLE backend_grants ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"),
 )
 
 

@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.auth.provider import ProviderTokenVerifier
 from mcp.server.auth.routes import build_resource_metadata_url, create_protected_resource_routes
@@ -31,6 +32,7 @@ from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import roles
 from .auth.provider import ALL_SCOPES, SCOPE_USE, HubOAuthProvider
 from .plugins.base import BackendInstance, Plugin
 
@@ -104,6 +106,9 @@ class MountManager:
         """Build and start one version's server. Same lifespan dance as a mount."""
         shaped = plugin.variant(instance, version) if version else instance
         server = plugin.build(shaped)
+        # Innermost, so it sees what the backend really answered rather than
+        # anything a plugin's own middleware went on to add.
+        server.middleware.append(roles.RoleGuard(server, instance.slug))
         sub_app = server.streamable_http_app(
             streamable_http_path="/",
             transport_security=TransportSecuritySettings(
@@ -188,7 +193,11 @@ class MountManager:
         #
         # `resource_server_url` is what pins a token to *this* backend: a token
         # minted for another backend on the same hub is refused, not honoured.
-        dispatch = _VersionDispatch(self, instance.slug)
+        # AuthContextMiddleware is what makes `get_access_token()` work inside
+        # a tool handler. The SDK installs it itself when a server owns its own
+        # auth; these servers do not — the hub authenticates out here — so
+        # without this a plugin would find no caller at all.
+        dispatch = AuthContextMiddleware(_VersionDispatch(self, instance.slug))
         authorized = _Authorized(dispatch, self._db, instance.slug) if self._db is not None else dispatch
         guarded = AuthenticationMiddleware(
             RequireAuthMiddleware(
@@ -318,6 +327,11 @@ class _Authorized:
     Checked per request rather than when the token was issued, so removing an
     account's access takes effect at once instead of whenever its token happens
     to expire. A token proves who is asking; this decides whether they may.
+
+    It also resolves *how far* they may go, and leaves the answer where MCP
+    request handling can find it. Doing it here means one database read per
+    HTTP request instead of one per message, and keeps both halves of the
+    decision — whether, and how far — in a single query.
     """
 
     def __init__(self, app: ASGIApp, db: Any, slug: str) -> None:
@@ -325,30 +339,44 @@ class _Authorized:
         self._db = db
         self._slug = slug
 
-    def _permitted(self, username: str | None) -> bool:
+    def _level(self, username: str | None) -> str | None:
+        """The account's level for this backend, or None if it may not use it."""
         if not username:
-            return False
+            return None
         row = self._db.one(
             "SELECT u.is_admin, "
-            "       (SELECT COUNT(*) FROM backend_grants g JOIN backends b ON b.id = g.backend_id "
-            "        WHERE g.user_id = u.id AND b.slug = ?) AS granted "
+            "       (SELECT g.role FROM backend_grants g JOIN backends b ON b.id = g.backend_id "
+            "        WHERE g.user_id = u.id AND b.slug = ?) AS role "
             "FROM users u WHERE u.username = ?",
             (self._slug, username),
         )
         if row is None:
             # The account was deleted while a token of theirs was still valid.
-            return False
-        return bool(row["is_admin"]) or bool(row["granted"])
+            return None
+        if row["is_admin"]:
+            # An administrator has no grant row to read a level from, and the
+            # point of the role is admins reach everything.
+            return roles.ADMIN
+        if row["role"] is None:
+            return None
+        return roles.normalise(str(row["role"]))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         user = scope.get("user")
         token = getattr(user, "access_token", None)
         username = getattr(token, "subject", None)
-        if not self._permitted(username):
+        level = self._level(username)
+        if level is None:
             log.warning("account %r has no grant for backend %s", username, self._slug)
             await _forbidden(send, self._slug)
             return
-        await self._app(scope, receive, send)
+        scope = dict(scope)
+        scope[roles.SCOPE_KEY] = level
+        marker = roles.current_role.set(level)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            roles.current_role.reset(marker)
 
 
 async def _forbidden(send: Send, slug: str) -> None:

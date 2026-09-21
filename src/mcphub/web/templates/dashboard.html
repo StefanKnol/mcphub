@@ -37,6 +37,11 @@ connector so their tools stay in separate lists.</p>
           <span class="pill" style="color:var(--accent);border-color:var(--accent)"
                 title="The registry has {{ b.latest }}. Press Update to move to it; nothing moves on its own.">v{{ b.latest }} available</span>
         {% endif %}
+        {# An administrator holds every backend at the top level, so a pill on
+           each one would say only that they are an administrator. #}
+        {% if not is_admin and b.level %}
+          <span class="pill" title="{{ level_help[b.level] }} Tools beyond this level are not offered to you.">{{ b.level }}</span>
+        {% endif %}
         {% if not b.enabled %}<span class="pill off">disabled</span>
         {% elif b.mounted %}<span class="pill on">live</span>
         {% else %}<span class="pill off">not mounted</span>{% endif %}

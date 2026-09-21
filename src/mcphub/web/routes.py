@@ -22,6 +22,7 @@ from starlette.templating import Jinja2Templates
 from ..crypto import hash_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
+from .. import roles
 from ..plugins.base import (
     CLEAR_PREFIX,
     BackendInstance,
@@ -473,10 +474,20 @@ def build(hub: Any) -> list[Route]:
         row = account_row(user)
         return bool(row and row["is_admin"])
 
-    def granted_backends(user_id: int) -> set[str]:
-        return {r["slug"] for r in hub.db.query(
-            "SELECT b.slug FROM backend_grants g JOIN backends b ON b.id = g.backend_id "
+    def grant_levels(user_id: int) -> dict[str, str]:
+        """Every backend this account was granted, and how far each one goes."""
+        return {r["slug"]: roles.normalise(r["role"]) for r in hub.db.query(
+            "SELECT b.slug, g.role FROM backend_grants g JOIN backends b ON b.id = g.backend_id "
             "WHERE g.user_id = ?", (user_id,))}
+
+    def granted_backends(user_id: int) -> set[str]:
+        return set(grant_levels(user_id))
+
+    def level_for(user: dict[str, Any] | None, slug: str) -> str:
+        """An account's level on one backend. Admins hold every backend outright."""
+        if is_admin(user):
+            return roles.ADMIN
+        return grant_levels(user["id"]).get(slug, roles.VIEWER) if user else roles.VIEWER
 
     def may_use(user: dict[str, Any], slug: str) -> bool:
         return is_admin(user) or slug in granted_backends(user["id"])
@@ -588,6 +599,7 @@ def build(hub: Any) -> list[Route]:
                 "updated_at": row["updated_at"],
                 "icon": _backend_icon(row),
                 "initials": _initials(row["title"]),
+                "level": level_for(user, row["slug"]),
                 "version": _config_value(row, "upstream_version"),
                 "latest": _config_value(row, "latest_version"),
                 "ui_url": _config_value(row, "ui_url"),
@@ -606,6 +618,7 @@ def build(hub: Any) -> list[Route]:
         return render(request, "dashboard.html", backends=backends,
                       plugins=hub.registry.all() if may_manage_backends(user) else [],
                       can_manage=may_manage_backends(user), is_admin=is_admin(user),
+                      level_help=roles.DESCRIPTIONS,
                       errors=request.query_params.getlist("error"))
 
     # ── backend create / edit ─────────────────────────────────────────────
@@ -1179,6 +1192,10 @@ def build(hub: Any) -> list[Route]:
         identity = {
             "x-mcphub-user": str(user["username"]),
             "x-mcphub-admin": "1" if is_admin(user) else "0",
+            # The hub can enforce a level over MCP, where tools say what they
+            # do. It cannot over HTTP, where a POST is just a POST — so an app
+            # is told the level and decides for itself what it means.
+            "x-mcphub-role": level_for(user, slug),
         } if trusted else None
         return await proxy_ui(request, target, f"/ui/{slug}/",
                               trusted=trusted, identity=identity)
@@ -1221,9 +1238,11 @@ def build(hub: Any) -> list[Route]:
             "id": r["id"], "username": r["username"],
             "is_admin": bool(r["is_admin"]), "can_add": bool(r["can_add_backends"]),
             "is_you": r["id"] == user["id"],
-            "grants": sorted(granted_backends(r["id"])),
+            "levels": grant_levels(r["id"]),
         } for r in rows]
         return render(request, "accounts.html", accounts=listing, backends=backends,
+                      levels=roles.LEVELS, level_help=roles.DESCRIPTIONS,
+                      default_level=roles.DEFAULT,
                       errors=request.query_params.getlist("error"))
 
     async def account_create(request: Request) -> Response:
@@ -1285,13 +1304,20 @@ def build(hub: Any) -> list[Route]:
 
         wanted = {str(v) for v in form.getlist("grant")}
         hub.db.execute("DELETE FROM backend_grants WHERE user_id = ?", (target["id"],))
+        granted: dict[str, str] = {}
         for row in hub.backend_rows():
-            if row["slug"] in wanted:
-                hub.db.execute(
-                    "INSERT INTO backend_grants (user_id, backend_id, created_at) VALUES (?, ?, ?)",
-                    (target["id"], row["id"], utcnow()))
+            if row["slug"] not in wanted:
+                continue
+            # The select is submitted whether or not the box is ticked, so it is
+            # read here rather than trusted to be absent for an ungranted one.
+            level = roles.normalise(str(form.get(f"level-{row['slug']}", "")))
+            granted[row["slug"]] = level
+            hub.db.execute(
+                "INSERT INTO backend_grants (user_id, backend_id, role, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (target["id"], row["id"], level, utcnow()))
         log.info("account %r updated by %r; grants now %s",
-                 target["username"], user["username"], sorted(wanted))
+                 target["username"], user["username"], sorted(granted.items()))
         return RedirectResponse("/accounts", status_code=303)
 
     async def account_delete(request: Request) -> Response:

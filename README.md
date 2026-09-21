@@ -241,12 +241,18 @@ A trusted app is also sent who is signed in:
 | --- | --- |
 | `X-Mcphub-User` | the account name |
 | `X-Mcphub-Admin` | `1` or `0` |
+| `X-Mcphub-Role` | `viewer`, `user` or `admin` — this account's [level](#levels) on this backend |
 | `X-Forwarded-Prefix` | where it is mounted |
 
 Which means an app you control does not need a login at all: the hub
 authenticates, checks the grant, and tells the app who it is talking to. A
 sandboxed app is told none of this — it could not act on it, and the account
 name is not owed to something unvouched for.
+
+The level is only *reported* here, not enforced. Over MCP the hub can enforce
+it, because tools declare what they do; over HTTP a POST is just a POST, and an
+app that wants to honour the same levels has to decide for itself what they
+mean in its own terms.
 
 #### What a proxied interface has to do
 
@@ -291,7 +297,7 @@ The first run creates one administrator. Further accounts are added under
 | --- | --- |
 | Administrator | Manages accounts, and reaches every backend without a grant. |
 | May configure backends | Add, edit and remove backends. They are shared, so this affects everyone granted them. |
-| Grants | Which backends this account may use. |
+| Grants | Which backends this account may use, and at which level. |
 
 Backends are shared rather than per-account: configured once, then granted out,
 so a router's password lives in one place and there is one page showing who can
@@ -302,6 +308,36 @@ removing access cuts off an existing connector at once rather than whenever its
 token happens to expire. Authorising a connector for a backend an account has
 not been granted is refused at sign-in, with the reason, instead of succeeding
 and then failing on use.
+
+#### Levels
+
+A grant says whether an account may reach a backend. Its **level** says how
+much of it they get:
+
+| | |
+| --- | --- |
+| `viewer` | Only tools the backend marks as making no changes. |
+| `user` | Everything except tools the backend marks as destructive. |
+| `admin` | Everything the backend offers. |
+
+The hub enforces this itself, from the `readOnlyHint` and `destructiveHint`
+annotations that servers already publish, rather than asking the backend to
+police its own callers — which means it works on a server that has never heard
+of this hub. Tools above the level are left out of `tools/list` *and* refused
+if called anyway, since a client can call a tool it was never offered.
+
+A tool carrying no annotations is withheld from a `viewer` and allowed for a
+`user`: nothing says it only reads, and nothing says it destroys. So a backend
+that annotates nothing at all offers a viewer nothing at all — check the tool
+list after setting one.
+
+One process serves every level; the filtering happens per request, not per
+server, so levels cost no extra subprocesses. Changing a level takes effect on
+the next request of an already-open connector, the same as revoking a grant.
+
+Levels apply to tools. Resources and prompts are read-shaped by nature and
+nothing in the protocol marks one of them dangerous, so they are not filtered.
+An administrator holds every backend at `admin` without a grant row.
 
 ### Configuration
 
