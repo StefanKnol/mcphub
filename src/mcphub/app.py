@@ -16,6 +16,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from .appaccess import AppAccess
 from .auth.provider import ALL_SCOPES, HubOAuthProvider
 from .config import Settings
 from .auth.cimd import ClientMetadataResolver
@@ -24,6 +25,9 @@ from .db import Database, utcnow
 from .mounts import MountManager
 from . import storage
 from .plugins.base import BackendInstance
+from .plugins.builtin.hub import SLUG as HUB_SLUG
+from .plugins.builtin.hub import TITLE as HUB_TITLE
+from .plugins.builtin.hub import HubPlugin
 from .plugins.registry import PluginRegistry
 from .updates import UpdateChecker
 from .web import routes as web_routes
@@ -49,9 +53,14 @@ class Hub:
         self.db = Database(settings.db_path)
         self.secrets = SecretBox(load_or_create_key(settings.key_path))
         self.registry = PluginRegistry()
+        # Registered rather than loaded: this one needs the hub it manages, and
+        # a module-level singleton on an entry point would bind to whichever hub
+        # started last. One process can run two, and the tests do.
+        self.registry.register(HubPlugin(self))
         self.registry.load_entry_points()
         self.client_metadata = ClientMetadataResolver(enabled=settings.cimd_enabled)
         self.provider = HubOAuthProvider(self.db, client_metadata=self.client_metadata)
+        self.apps = AppAccess(self)
         self.mounts: MountManager | None = None  # set once the app exists
         self.updates = UpdateChecker(self, settings.update_interval)
 
@@ -109,25 +118,35 @@ class Hub:
             return f"{type(exc).__name__}: {exc}"
         return None
 
-    DOCS_SLUG = "docs"
+    def ensure_own_backend(self) -> None:
+        """Keep the hub's own backend present, on every start rather than the first.
 
-    def bootstrap_docs(self) -> None:
-        """Add the hub's own documentation as a backend, on first run only.
-
-        Tied to the same first run that creates the admin account rather than
-        to "no backends exist", so deleting it means deleting it — it does not
-        come back the next time the hub starts with an empty list.
+        It is part of the hub, not something an administrator added, so it is
+        not theirs to delete — and a row that can be deleted will be. What is
+        theirs is whether it is exposed: `enabled` is never touched here, so
+        disabling it sticks.
         """
-        if self.registry.get("mcphub-docs") is None:
+        # An earlier build shipped it as a separately added `docs` backend.
+        # Renaming carries its grants and pins, which deleting and recreating
+        # would silently drop.
+        old = self.db.one("SELECT id FROM backends WHERE plugin_id = 'mcphub-docs'")
+        if old is not None and self.db.one(
+                "SELECT id FROM backends WHERE slug = ?", (HUB_SLUG,)) is None:
+            self.db.execute(
+                "UPDATE backends SET slug = ?, plugin_id = ?, title = ?, updated_at = ? "
+                "WHERE id = ?", (HUB_SLUG, HUB_SLUG, HUB_TITLE, utcnow(), old["id"]))
+            storage.rename(self.settings.data_dir, "docs", HUB_SLUG)
+            log.info("the documentation backend is now built in, at /mcp/%s", HUB_SLUG)
             return
-        if self.db.one("SELECT id FROM backends WHERE slug = ?", (self.DOCS_SLUG,)):
+
+        if self.db.one("SELECT id FROM backends WHERE slug = ?", (HUB_SLUG,)):
             return
         self.db.execute(
             "INSERT INTO backends (slug, plugin_id, title, enabled, config_json, "
-            "created_at, updated_at) VALUES (?, 'mcphub-docs', ?, 1, '{}', ?, ?)",
-            (self.DOCS_SLUG, "mcphub documentation", utcnow(), utcnow()),
+            "created_at, updated_at) VALUES (?, ?, ?, 1, '{}', ?, ?)",
+            (HUB_SLUG, HUB_SLUG, HUB_TITLE, utcnow(), utcnow()),
         )
-        log.info("added the documentation backend at /mcp/%s", self.DOCS_SLUG)
+        log.info("this hub's own backend is at /mcp/%s", HUB_SLUG)
 
     def bootstrap_admin(self) -> str | None:
         """Create the first account, returning its generated password once."""
@@ -148,9 +167,9 @@ def create_app(settings: Settings | None = None) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):
+        hub.ensure_own_backend()
         password = hub.bootstrap_admin()
         if password:
-            hub.bootstrap_docs()
             log.warning(
                 "\n%s\nFirst run: created the 'admin' account.\n"
                 "  username: admin\n  password: %s\n"
@@ -159,7 +178,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
             )
 
         hub.mounts = MountManager(app, hub.provider, settings, hub.db,
-                                  load_instance=hub.current_instance)
+                                  load_instance=hub.current_instance, apps=hub.apps)
         for row in hub.backend_rows(enabled_only=True):
             error = await hub.remount(row["slug"])
             if error:

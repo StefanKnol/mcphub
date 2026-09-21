@@ -36,6 +36,7 @@ from ...base import (
     Option,
     PluginDefaults,
 )
+from .... import appaccess
 from .... import storage
 from .mirror import mirror_prompt, mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
@@ -95,10 +96,12 @@ def _collect_env(instance: BackendInstance) -> dict[str, str]:
         for key, value in source.items():
             if key.startswith(ENV_PREFIX) and value not in (None, ""):
                 env[key[len(ENV_PREFIX):]] = str(value)
-    if instance.storage is None:
-        return env
-    return {storage.ENV_VAR: str(instance.storage),
-            **{k: storage.expand(v, instance.storage) for k, v in env.items()}}
+    if instance.storage is not None:
+        env = {storage.ENV_VAR: str(instance.storage),
+               **{k: storage.expand(v, instance.storage) for k, v in env.items()}}
+    # Last, and not expandable: these are credentials the hub minted, not
+    # settings, and a configured value must not be able to shadow one.
+    return {**env, **appaccess.environment_for(instance)}
 
 
 def _declared_env(instance: BackendInstance) -> list[dict[str, Any]]:
@@ -119,6 +122,9 @@ def _upstream(instance: BackendInstance) -> Upstream:
     header_value = str(instance.get("auth_value", "") or "").strip()
     if header_name and header_value:
         headers[header_name] = header_value
+    # An app in another container cannot be handed an environment, so the only
+    # channel to it is the connection the hub already opens.
+    headers.update(appaccess.header_for(instance))
     command = str(instance.get("command", "") or "").strip()
     url = str(instance.get("url", "") or "").strip()
     # Whichever the Connection field says wins. Without this, switching a

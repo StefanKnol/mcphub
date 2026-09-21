@@ -22,6 +22,7 @@ from mcphub.config import Settings
 from mcphub.crypto import hash_password
 from mcphub.db import utcnow
 from mcphub.plugins.base import BackendInstance, CheckResult, ConfigField, PluginDefaults
+from mcphub.plugins.builtin.hub import SLUG as HUB_SLUG
 from mcphub.web.routes import NEW_BACKEND, RESERVED_SLUGS, _save_backend
 
 PASSWORD = "correct horse battery"
@@ -93,7 +94,7 @@ async def test_a_backend_that_does_not_exist_yet_can_be_tested(clients):
 async def test_testing_writes_nothing(clients):
     hub, who = clients
     await who["boss"].post(f"/backends/{NEW_BACKEND}/test", data=typed(host="router"))
-    assert hub.backend_rows() == []
+    assert added(hub) == []
 
 
 async def test_what_is_typed_is_what_is_tested(clients):
@@ -213,6 +214,11 @@ async def test_a_refusal_names_the_field_in_words_the_form_uses(clients):
 
 # ── the slug that could never be opened ───────────────────────────────────
 
+def added(hub) -> list:
+    """Backends an administrator added, which is every one but the hub's own."""
+    return [r for r in hub.backend_rows() if r["slug"] != HUB_SLUG]
+
+
 def test_new_is_reserved():
     """`/backends/new` is registered ahead of `/backends/{slug}` and both lead
     to the same handler, so a backend named that could be created and then
@@ -226,4 +232,4 @@ async def test_a_backend_cannot_be_named_new(clients):
         "plugin_id": "spy", "title": "T", "slug": NEW_BACKEND, "host": "h"})
     assert response.status_code == 400
     assert "reserved" in response.text
-    assert hub.backend_rows() == []
+    assert added(hub) == []

@@ -19,7 +19,6 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx2>=2.5.0"]
 # backend that is about the hub itself rather than about a particular device.
 [project.entry-points."mcphub.plugins"]
 mcp-proxy = "mcphub.plugins.builtin.mcpproxy:PLUGIN"
-mcphub-docs = "mcphub.plugins.builtin.docs:PLUGIN"
 
 [build-system]
 requires = ["hatchling"]

@@ -87,6 +87,28 @@ Each grant also carries a level, which decides how much of the backend it gets.<
 </div>
 {% endfor %}
 
+{% if apps %}
+<h2>Apps</h2>
+<p class="sub">A backend granted other backends gets an identity of its own, so its access
+  can be seen and taken back in one place. Change what an app may use on its own settings
+  page; these are shown here because they are real grants, not a separate list.</p>
+<div class="card">
+  <table>
+    <tr><th>App</th><th>May use</th></tr>
+    {% for a in apps %}
+    <tr>
+      <td><a class="mono" href="/backends/{{ a.slug }}">{{ a.slug }}</a></td>
+      <td>
+        {% for slug, level in a.levels.items() %}
+        <span class="pill"><span class="mono">{{ slug }}</span> — {{ level }}</span>
+        {% else %}<span class="note">nothing</span>{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
 <h2>Add an account</h2>
 <div class="card">
   <form class="validated" method="post" action="/accounts/new">

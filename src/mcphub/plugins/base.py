@@ -180,6 +180,12 @@ class BackendInstance:
     plugin_id: str
     config: dict[str, Any] = field(default_factory=dict)
     secrets: dict[str, Any] = field(default_factory=dict)
+    granted: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Other backends on this hub that this one was granted, as
+    `{slug: {"url", "token", "level"}}`. Filled by the hub when it starts a
+    backend; empty everywhere else, including when a form is being validated.
+    See `mcphub.appaccess`."""
+
     storage: Path | None = None
     """A directory of this backend's own, under the data volume, for anything
     it needs to keep between restarts. None when the hub could not create it —

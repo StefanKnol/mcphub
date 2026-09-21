@@ -16,12 +16,20 @@ from mcphub import roles, storage
 from mcphub.app import create_app
 from mcphub.config import Settings
 from mcphub.plugins.base import BackendInstance
-from mcphub.plugins.builtin.docs import DOCS_DIR, ORDER, PLUGIN, topics
+from mcphub.plugins.builtin.hub import DOCS_DIR, ORDER, SLUG, HubPlugin, topics
 
 
 @pytest.fixture
-def server():
-    return PLUGIN.build(BackendInstance(slug="docs", title="docs", plugin_id="mcphub-docs"))
+def hub():
+    settings = Settings(data_dir=Path(tempfile.mkdtemp()), public_url="http://localhost:8080",
+                        host="127.0.0.1", port=8080, dev_mode=True)
+    return create_app(settings).state.hub
+
+
+@pytest.fixture
+def server(hub):
+    return hub.registry.get(SLUG).build(
+        BackendInstance(slug=SLUG, title=SLUG, plugin_id=SLUG))
 
 
 async def call(server, name, **arguments) -> str:
@@ -86,14 +94,16 @@ async def test_search_with_nothing_to_find_says_so(server):
 
 # ── reachable like everything else ────────────────────────────────────────
 
-async def test_every_tool_is_read_only(server):
+DOC_TOOLS = ("list_topics", "read_topic", "search_docs")
+
+
+async def test_every_documentation_tool_is_read_only(server):
     """So the documentation is readable at every level, including viewer —
-    which is also the hub's own smallest end-to-end test of `annotations`."""
-    tools = await server.list_tools()
-    assert tools
-    for tool in tools:
-        assert tool.annotations.read_only_hint is True, tool.name
-        assert roles.allows(roles.VIEWER, tool), tool.name
+    which is also the hub's own smallest end-to-end use of `annotations`."""
+    tools = {t.name: t for t in await server.list_tools()}
+    for name in DOC_TOOLS:
+        assert tools[name].annotations.read_only_hint is True, name
+        assert roles.allows(roles.VIEWER, tools[name]), name
 
 
 async def test_each_page_is_a_resource_a_client_can_attach(server):
@@ -103,34 +113,58 @@ async def test_each_page_is_a_resource_a_client_can_attach(server):
     assert listed == {f"docs://{t.name}" for t in topics()}
 
 
-async def test_it_says_what_it_found(server):
-    result = await PLUGIN.check(BackendInstance(slug="docs", title="d", plugin_id="mcphub-docs"))
-    assert result.ok and "overview" in result.detail
+async def test_it_says_what_it_found(hub):
+    result = await hub.registry.get(SLUG).check(
+        BackendInstance(slug=SLUG, title="d", plugin_id=SLUG))
+    assert result.ok and "pages" in result.detail
 
 
-def test_a_new_hub_comes_with_it_mounted():
-    settings = Settings(data_dir=Path(tempfile.mkdtemp()), public_url="http://localhost:8080",
-                        host="127.0.0.1", port=8080, dev_mode=True)
-    hub = create_app(settings).state.hub
-    assert hub.bootstrap_admin(), "this is the first run"
-    hub.bootstrap_docs()
-
-    row = hub.backend_row("docs")
+def test_a_new_hub_comes_with_it_mounted(hub):
+    hub.ensure_own_backend()
+    row = hub.backend_row(SLUG)
     assert row is not None and row["enabled"]
 
 
-def test_deleting_it_is_final():
-    """It arrives with the first run, not every run. Coming back after being
-    deleted would be the hub arguing with the administrator."""
-    settings = Settings(data_dir=Path(tempfile.mkdtemp()), public_url="http://localhost:8080",
-                        host="127.0.0.1", port=8080, dev_mode=True)
-    hub = create_app(settings).state.hub
-    hub.bootstrap_admin()
-    hub.bootstrap_docs()
-    hub.db.execute("DELETE FROM backends WHERE slug = 'docs'")
+def test_it_comes_back_if_the_row_goes(hub):
+    """It is part of the hub, not something an administrator added, so it is
+    not theirs to delete — and a row that can be deleted will be."""
+    hub.ensure_own_backend()
+    hub.db.execute("DELETE FROM backends WHERE slug = ?", (SLUG,))
+    hub.ensure_own_backend()
+    assert hub.backend_row(SLUG) is not None
 
-    assert hub.bootstrap_admin() is None, "no longer a first run"
+
+def test_disabling_it_sticks(hub):
+    """What is theirs is whether it is exposed."""
+    hub.ensure_own_backend()
+    hub.db.execute("UPDATE backends SET enabled = 0 WHERE slug = ?", (SLUG,))
+    hub.ensure_own_backend()
+    assert not hub.backend_row(SLUG)["enabled"]
+
+
+def test_an_earlier_docs_backend_is_carried_over_rather_than_replaced(hub):
+    """Renaming keeps its grants and pins; deleting and recreating would drop
+    them without saying so."""
+    from mcphub.db import utcnow
+
+    hub.db.execute(
+        "INSERT INTO backends (slug, plugin_id, title, enabled, config_json, "
+        "created_at, updated_at) VALUES ('docs', 'mcphub-docs', 'docs', 1, '{}', ?, ?)",
+        (utcnow(), utcnow()))
+    before = hub.backend_row("docs")["id"]
+    hub.db.execute("INSERT INTO users (username, password_hash, created_at) "
+                   "VALUES ('reader', 'x', ?)", (utcnow(),))
+    uid = hub.db.one("SELECT id FROM users WHERE username = 'reader'")["id"]
+    hub.db.execute("INSERT INTO backend_grants (user_id, backend_id, role, created_at) "
+                   "VALUES (?, ?, 'viewer', ?)", (uid, before, utcnow()))
+
+    hub.ensure_own_backend()
+    after = hub.backend_row(SLUG)
+    assert after is not None and after["id"] == before
+    assert after["plugin_id"] == SLUG
     assert hub.backend_row("docs") is None
+    assert hub.db.one("SELECT role FROM backend_grants WHERE backend_id = ?",
+                      (before,))["role"] == "viewer"
 
 
 # ── still true of the code beside it ──────────────────────────────────────

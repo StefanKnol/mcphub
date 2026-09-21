@@ -81,8 +81,9 @@ class MountManager:
     """Owns the live set of backend endpoints and keeps the router in sync."""
 
     def __init__(self, app: Any, provider: HubOAuthProvider, settings: Any, db: Any = None,
-                 load_instance: Any = None) -> None:
+                 load_instance: Any = None, apps: Any = None) -> None:
         self._app = app
+        self._apps = apps
         self._provider = provider
         self._settings = settings
         self._db = db
@@ -111,7 +112,10 @@ class MountManager:
         # share a directory is one decision in one place.
         shaped = replace(shaped, storage=storage.ensure(
             self._settings.data_dir, instance.slug,
-            version if instance.config.get(storage.PER_VERSION) else ""))
+            version if instance.config.get(storage.PER_VERSION) else ""),
+            # Minted on first use and held for the life of the process, so a
+            # restart rotates them and the database keeps only hashes.
+            granted=self._apps.issue(instance.slug) if self._apps else {})
         server = plugin.build(shaped)
         # Innermost, so it sees what the backend really answered rather than
         # anything a plugin's own middleware went on to add.

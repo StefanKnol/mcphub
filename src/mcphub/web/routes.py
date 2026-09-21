@@ -22,8 +22,10 @@ from starlette.templating import Jinja2Templates
 from ..crypto import hash_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
+from .. import appaccess
 from .. import roles
 from .. import storage
+from ..plugins.builtin.hub import SLUG as HUB_SLUG
 from ..plugins.base import (
     CLEAR_PREFIX,
     BackendInstance,
@@ -60,7 +62,10 @@ no real backend can hold the name.
 # named that could be created and then never opened again: its settings page
 # would forever render the blank create form instead.
 RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp", "ui",
-                  "authorize", "token", "register", "registry", "revoke", NEW_BACKEND}
+                  "authorize", "token", "register", "registry", "revoke", NEW_BACKEND,
+                  # The hub's own backend. Reserved so nothing else can take the
+                  # name, and kept by the one thing that is allowed to have it.
+                  HUB_SLUG}
 
 
 def _initials(title: str) -> str:
@@ -491,6 +496,21 @@ def build(hub: Any) -> list[Route]:
     def granted_backends(user_id: int) -> set[str]:
         return set(grant_levels(user_id))
 
+    def app_access(row: Any) -> dict[str, Any]:
+        """What the settings form needs for the "backends this app may use" picker.
+
+        A backend can be granted others, but only once it exists — it needs an
+        identity of its own, and that is keyed by its URL name.
+        """
+        if row is None:
+            return {"app_grants": {}, "app_targets": []}
+        return {
+            "app_grants": hub.apps.grants(row["slug"]),
+            # Not itself: an app reaching itself through the hub would be a
+            # loop with nothing in it.
+            "app_targets": [b for b in hub.backend_rows() if b["slug"] != row["slug"]],
+        }
+
     def level_for(user: dict[str, Any] | None, slug: str) -> str:
         """An account's level on one backend. Admins hold every backend outright."""
         if is_admin(user):
@@ -624,7 +644,8 @@ def build(hub: Any) -> list[Route]:
             if visible is None or row["slug"] in visible
         ]
         return render(request, "dashboard.html", backends=backends,
-                      plugins=hub.registry.all() if may_manage_backends(user) else [],
+                      plugins=[p for p in hub.registry.all() if p.id != HUB_SLUG]
+                      if may_manage_backends(user) else [],
                       can_manage=may_manage_backends(user), is_admin=is_admin(user),
                       level_help=roles.DESCRIPTIONS,
                       errors=request.query_params.getlist("error"))
@@ -682,6 +703,8 @@ def build(hub: Any) -> list[Route]:
                           orphans=orphaned_secrets(plugin, instance),
                           storage_path=instance.storage if instance else None,
                           storage_var=storage.ENV_VAR,
+                          **app_access(row), levels=roles.LEVELS,
+                          level_help=roles.DESCRIPTIONS, default_level=roles.DEFAULT,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -705,10 +728,16 @@ def build(hub: Any) -> list[Route]:
 
         if not SLUG_RE.match(new_slug):
             errors.append("URL name must be lowercase letters, digits and dashes (2–40 characters).")
-        elif new_slug in RESERVED_SLUGS:
+        elif new_slug in RESERVED_SLUGS and new_slug != slug:
+            # Reserved against *taking* the name, not against a backend that
+            # already has it keeping it — which is how the hub's own backend
+            # can be edited at all.
             errors.append(f"{new_slug!r} is reserved — pick another URL name.")
         elif new_slug != slug and hub.backend_row(new_slug) is not None:
             errors.append(f"A backend with the URL name {new_slug!r} already exists.")
+        if slug == HUB_SLUG and new_slug != slug:
+            errors.append("This hub's own backend keeps its URL name; clients and its "
+                          "documentation both refer to it by that name.")
         if not title:
             errors.append("Display name is required.")
 
@@ -732,6 +761,8 @@ def build(hub: Any) -> list[Route]:
                           orphans=orphaned_secrets(plugin, instance),
                           storage_path=instance.storage if instance else None,
                           storage_var=storage.ENV_VAR,
+                          **app_access(row), levels=roles.LEVELS,
+                          level_help=roles.DESCRIPTIONS, default_level=roles.DEFAULT,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -749,7 +780,18 @@ def build(hub: Any) -> list[Route]:
         _save_backend(hub, slug=new_slug, plugin_id=plugin.id, title=title, enabled=enabled,
                       config=config, secrets=secret, row=row)
         if row is not None and slug != new_slug:
+            hub.apps.rename(slug, new_slug)
             await hub.mounts.unmount(slug)
+
+        # After the save, so a grant can name a backend that is only now called
+        # what it is called. Replaces rather than merges: the picker shows every
+        # candidate, so what came back is the whole answer.
+        if row is not None:
+            wanted = {str(v) for v in form.getlist("app_grant")}
+            hub.apps.set_grants(new_slug, {
+                target: str(form.get(f"app_level-{target}", ""))
+                for target in wanted
+            })
 
         error = await hub.remount(new_slug)
         if error:
@@ -1015,6 +1057,10 @@ def build(hub: Any) -> list[Route]:
         row = hub.backend_row(slug)
         if row is None:
             return RedirectResponse("/", status_code=303)
+        if slug == HUB_SLUG:
+            return denied(request, "This is the hub's own backend, so it is not yours to "
+                                   "delete — it would be back on the next restart. Disable "
+                                   "it instead if you do not want it exposed.")
 
         # The endpoint comes down first, so nothing new arrives while the
         # plugin is releasing whatever this backend holds.
@@ -1034,6 +1080,9 @@ def build(hub: Any) -> list[Route]:
                         f"up after it: {type(exc).__name__}: {exc}")
 
         released = _revoke_backend_credentials(hub, slug)
+        # The app's own identity goes with it. An account for a backend that is
+        # no longer there can reach nothing, and is only a row to wonder about.
+        hub.apps.forget(slug)
         hub.db.execute("DELETE FROM backends WHERE slug = ?", (slug,))
         log.info("deleted backend %s, releasing %d credential(s)", slug, released)
         return RedirectResponse(f"/?error={quote(note)}" if note else "/", status_code=303)
@@ -1213,6 +1262,9 @@ def build(hub: Any) -> list[Route]:
             # do. It cannot over HTTP, where a POST is just a POST — so an app
             # is told the level and decides for itself what it means.
             "x-mcphub-role": level_for(user, slug),
+            # And its own credentials for whatever it was granted, which are
+            # the app's rather than this person's.
+            **hub.apps.header(slug),
         } if trusted else None
         return await proxy_ui(request, target, f"/ui/{slug}/",
                               trusted=trusted, identity=identity)
@@ -1251,14 +1303,22 @@ def build(hub: Any) -> list[Route]:
 
         rows = hub.db.query("SELECT * FROM users ORDER BY username")
         backends = hub.backend_rows()
+        # An app has an account so that the grant machinery applies to it, but
+        # it is not a person: editing it here would offer to make a backend an
+        # administrator. It is listed below instead, where it can be seen and
+        # revoked, and it is changed on the app's own settings page.
         listing = [{
             "id": r["id"], "username": r["username"],
             "is_admin": bool(r["is_admin"]), "can_add": bool(r["can_add_backends"]),
             "is_you": r["id"] == user["id"],
             "levels": grant_levels(r["id"]),
-        } for r in rows]
+        } for r in rows if not appaccess.is_app(r["username"])]
+        apps = [{
+            "slug": r["username"][len(appaccess.PREFIX):],
+            "levels": grant_levels(r["id"]),
+        } for r in rows if appaccess.is_app(r["username"])]
         return render(request, "accounts.html", accounts=listing, backends=backends,
-                      levels=roles.LEVELS, level_help=roles.DESCRIPTIONS,
+                      apps=apps, levels=roles.LEVELS, level_help=roles.DESCRIPTIONS,
                       default_level=roles.DEFAULT,
                       errors=request.query_params.getlist("error"))
 

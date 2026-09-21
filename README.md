@@ -30,10 +30,10 @@ same hub.
 backend — it takes effect immediately, with no restart and no YAML. Credentials
 are encrypted at rest and never sent back to the browser.
 
-**Its own documentation, over MCP.** A new hub comes with a `docs` backend
-carrying everything below about building and deploying apps for it. Connect it
-and whatever you are writing with can read the page on tool annotations while
-it is writing tools, instead of being told about it afterwards.
+**A backend for the hub itself.** Every hub has `mcphub`, built in and
+reserved: the documentation below about building apps for it, and tools for
+deploying them. Connect it and whatever you are writing with can read the page
+on tool annotations while it is writing tools, then deploy the result.
 
 ## Running it
 
@@ -342,6 +342,40 @@ Renaming a backend moves its directory with it. Deleting one does **not** delete
 its files — unmounting is reversible and a dropped database is not, so that is
 left to you.
 
+### What an app may use
+
+An app often needs another backend on the same hub. Rather than being handed a
+credential by hand — which nobody can then see or revoke in one place — a
+backend can be granted other backends on its own settings page, with a level
+each, using the same picker as for a person.
+
+It gets an identity to go with it: an ordinary account called `app:<slug>`, with
+no password that can ever verify. That is the whole mechanism. Its grants are
+`backend_grants` rows, its tokens are bound to one backend each by the same
+RFC 8707 check, and revoking it is deleting rows — not a second permission
+system standing beside the first. The **Accounts** page lists app identities
+separately from people, so what an app holds is visible in the same place as
+what everyone else holds.
+
+Credentials arrive on whichever channel the hub already has:
+
+| | |
+| --- | --- |
+| A server the hub launches | `MCPHUB_URL` and `MCPHUB_BACKENDS` in its environment |
+| A server the hub connects to | `X-Mcphub-Backends` on the connection |
+| A trusted web interface | `X-Mcphub-Backends` on each request |
+
+One token per granted backend, because a token here is bound to one endpoint.
+They are minted when the app starts and the database keeps only hashes, so a
+restart rotates them and changing a grant revokes them.
+
+**The access is the app's, not the user's.** A `viewer` using an app that holds
+`admin` on the router reaches the router as the app. That is the point — the app
+is a service with its own authority — but it means the app is the only thing
+that can apply the person's own level. It is told that level in
+`X-Mcphub-Role`; the hub cannot apply it, because over the app's own API it
+cannot tell an edit from a search.
+
 ### Configuration
 
 Only these are environment variables. Everything else lives in the database.
@@ -500,24 +534,46 @@ changes; a server that quietly stops launching turns the build red rather than
 keeping its badge. The script self-tests its own harness first, so "everything
 failed" is distinguishable from "the harness is broken".
 
-## Documentation, served
+## The mcphub backend
 
-A new hub creates one backend for itself: **mcphub documentation**, at
-`/mcp/docs`. It carries eight pages about building for the hub — annotations,
-levels, web interfaces, storage, plugins, publishing, deploying — as MCP tools
-(`list_topics`, `read_topic`, `search_docs`) and as one resource per page, so a
-client can attach a page directly.
+Every hub has one backend it did not get from anyone: `mcphub`, at `/mcp/mcphub`.
+Built in — the hub creates it, keeps the name reserved, and refuses to delete it
+— but an ordinary mount in every other respect, with the same OAuth, grants and
+levels as anything else. It can be disabled; disabling is reversible and
+deleting is not.
 
-Every tool on it is read-only, so it works at every level including `viewer`.
+**Documentation.** Ten pages about building for the hub, as `list_topics`,
+`read_topic` and `search_docs`, plus one resource per page so a client can
+attach one directly. The pages ship with the hub rather than being fetched, so
+they describe the build you are running. They live in `src/mcphub/data/docs/`;
+adding a file there adds a page, with no list to update.
 
-The pages ship with the hub rather than being fetched, so they describe the
-build you are running. They live in `src/mcphub/data/docs/`; adding a file there
-adds a page, with no list to update. `tests/test_docs.py` checks the pages
-against the code beside them — that the storage page names the variable the hub
-actually sets, that the levels page lists the levels that exist — so a rename
-that makes the documentation wrong fails the build rather than sitting there.
+**Managing the hub.**
 
-It arrives with the first run, not every run. Delete it and it stays deleted.
+| Tool | Level | |
+| --- | --- | --- |
+| `list_backends` | viewer | What is on this hub that you may see |
+| `describe_backend` | viewer | One backend in full, minus its secrets |
+| `search_registry` | viewer | Find a server in the official MCP registry |
+| `deploy_app` | user | Add a backend, from the registry or a URL |
+| `set_backend_enabled` | user | Bring an endpoint up or take it down |
+| `remove_backend` | admin | Delete a backend, its credentials and its grants |
+
+Two checks apply to each, and they are not the same check: whether the account
+may configure backends at all, exactly as the settings pages ask, and the level
+on this backend. Granting someone `admin` here does not make them able to
+configure backends, and being able to configure backends does not let a
+`viewer` connector deploy anything.
+
+Deliberately not here: granting accounts, changing levels, creating people.
+Those are decisions about who may do what, made by a person on a page rather
+than by a connector holding a token.
+
+`tests/test_docs.py` and `tests/test_hub_backend.py` check the pages against the
+code beside them — that the storage page names the variable the hub actually
+sets, that the levels page lists the levels that exist, that the table above
+matches the annotations the tools really carry. A change that makes the
+documentation wrong fails the build rather than sitting there.
 
 ## Writing a plugin
 
