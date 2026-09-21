@@ -22,7 +22,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from ...base import BackendInstance, CheckResult, PluginDefaults
-from . import docs, manage
+from . import docs, manage, prompts
 from .docs import DOCS_DIR, ORDER, Topic, topics  # re-exported: the docs are also tested directly
 
 SLUG = "mcphub"
@@ -57,6 +57,7 @@ class HubPlugin(PluginDefaults):
         server = MCPServer(instance.title)
         docs.install(server)
         manage.install(server, self._hub)
+        prompts.install(server, self._hub)
         return server
 
     async def check(self, instance: BackendInstance) -> CheckResult:

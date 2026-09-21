@@ -99,6 +99,11 @@ def _collect_env(instance: BackendInstance) -> dict[str, str]:
     if instance.storage is not None:
         env = {storage.ENV_VAR: str(instance.storage),
                **{k: storage.expand(v, instance.storage) for k, v in env.items()}}
+        # A second name for the same path, for the many servers that ask for
+        # their data directory as something other than ours.
+        named = str(instance.get(storage.CUSTOM_VAR, "") or "").strip()
+        if named:
+            env[named] = str(instance.storage)
     # Last, and not expandable: these are credentials the hub minted, not
     # settings, and a configured value must not be able to shadow one.
     return {**env, **appaccess.environment_for(instance)}
@@ -268,6 +273,42 @@ class McpProxyPlugin(PluginDefaults):
         ),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),
         ConfigField(
+            storage.ENABLED, "Give this server a data directory", type="bool", default=False,
+            required=False, page="app",
+            help=(
+                "A directory of its own on the hub's data volume, kept across restarts and "
+                "backed up with everything else. Off by default, because most wrapped "
+                "servers keep their data somewhere they already chose and a path the hub "
+                "names but nothing uses is just clutter. A server the hub launches is handed "
+                "the path; one reached over a URL is somewhere else, so you would mount the "
+                "path into that container yourself."
+            ),
+        ),
+        ConfigField(
+            storage.CUSTOM_VAR, "Environment variable for it", required=False, page="app",
+            show_if=(storage.ENABLED, "true"), placeholder="DB_PATH",
+            help=(
+                "The path always arrives as MCPHUB_STORAGE. Almost no server asks for it "
+                "under that name, so name the one yours does want and the hub sets that "
+                "too — DB_PATH, STATE_DIR, whatever it is. Leave blank if the server reads "
+                "MCPHUB_STORAGE itself, or if you would rather write the value out in the "
+                "environment box on the MCP page."
+            ),
+        ),
+        ConfigField(
+            storage.PER_VERSION, "Give each version its own directory", type="bool",
+            default=False, required=False, page="app", show_if=(storage.ENABLED, "true"),
+            help=(
+                "Off by default: every version of this backend, and every account using it, "
+                "shares one directory — which is what you want when the data is the thing "
+                "people are working on together and someone is trying a newer release of "
+                "the server that serves it. Turn it on where versions keep something they "
+                "cannot share, such as an index whose format changed. What it does not fix: "
+                "two versions sharing a directory also share any schema migration either "
+                "applies, and the hub cannot undo that."
+            ),
+        ),
+        ConfigField(
             ALLOW_KEY, "Tools to expose", type="multiselect", required=False,
             help=(
                 "Selecting none exposes everything the upstream offers, which for a large "
@@ -276,6 +317,11 @@ class McpProxyPlugin(PluginDefaults):
             ),
         ),
     )
+
+    def uses_storage(self, instance: BackendInstance) -> bool:
+        """Only when asked. Whether a wrapped server writes anything is not
+        something the hub can work out — only whoever chose that server knows."""
+        return bool(instance.get(storage.ENABLED))
 
     def fields_for(self, instance: BackendInstance | None) -> tuple[ConfigField, ...]:
         """The generic form, with the upstream's own declared variables spliced in.

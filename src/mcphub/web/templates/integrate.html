@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Make an app — mcphub{% endblock %}
+{% block body %}
+<h1>Make an app for this hub</h1>
+<p class="sub">A brief to hand an assistant working in your app's own repository. It is
+  mostly pointers into this hub's documentation, which is served over MCP at
+  <code>{{ public_url }}/mcp/{{ hub_slug }}</code> — so whatever reads it can look the
+  details up rather than take this page's word for them.</p>
+
+<div class="card">
+  <div class="field">
+    <label for="app">What to work on <span class="note">(optional)</span></label>
+    <input id="app" type="text" autocomplete="off"
+           placeholder="the Aenvae dictionary at ~/Projects/aenvae">
+    <p class="help">Added as the first line. Leave it blank when the assistant is already
+      in the project.</p>
+  </div>
+  <div class="toolbar">
+    <button type="button" class="primary" id="copy">Copy the prompt</button>
+    <span class="result" id="copied"></span>
+  </div>
+  <pre id="prompt" class="prompt">{{ prompt }}</pre>
+</div>
+
+<h2>Or from the connector</h2>
+<div class="card">
+  <p class="help">The same text is an MCP prompt on this hub's own backend, named
+    <span class="mono">{{ prompt_name }}</span>. A client that lists prompts will offer it
+    directly, with the same optional argument — nothing to copy at all.</p>
+</div>
+
+<script>
+var base = document.getElementById("prompt").textContent;
+var app = document.getElementById("app");
+var out = document.getElementById("copied");
+
+function text() {
+  var named = app.value.trim();
+  return named ? "The project to do this to: " + named + "\n\n" + base : base;
+}
+app.addEventListener("input", function () {
+  document.getElementById("prompt").textContent = text();
+});
+function said(message, ok) {
+  out.textContent = message;
+  out.className = "result " + (ok ? "ok" : "bad");
+}
+
+// Selecting it is the fallback's fallback. A button that silently does nothing
+// is the one outcome worth ruling out, and the async clipboard is refused in
+// more places than its being a secure context would suggest.
+function selectAndCopy() {
+  var range = document.createRange();
+  range.selectNodeContents(document.getElementById("prompt"));
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+  try {
+    if (document.execCommand("copy")) { said("Copied.", true); return; }
+  } catch (err) { /* fall through to telling them */ }
+  said("Selected \u2014 copy it yourself.", false);
+}
+
+document.getElementById("copy").addEventListener("click", async function () {
+  out.className = "result";
+  try {
+    await navigator.clipboard.writeText(text());
+    said("Copied.", true);
+  } catch (err) {
+    selectAndCopy();
+  }
+});
+</script>
+{% endblock %}

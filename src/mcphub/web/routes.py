@@ -27,6 +27,8 @@ from .. import appaccess
 from .. import roles
 from .. import storage
 from ..plugins.builtin.hub import SLUG as HUB_SLUG
+from ..plugins.builtin.hub.prompts import NAME as PROMPT_NAME
+from ..plugins.builtin.hub.prompts import integration_prompt
 from ..plugins.base import (
     CLEAR_PREFIX,
     BackendInstance,
@@ -64,7 +66,8 @@ no real backend can hold the name.
 # named that could be created and then never opened again: its settings page
 # would forever render the blank create form instead.
 RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp", "ui",
-                  "authorize", "token", "register", "registry", "revoke", NEW_BACKEND,
+                  "authorize", "token", "register", "registry", "revoke", "integrate",
+                  NEW_BACKEND,
                   # The hub's own backend. Reserved so nothing else can take the
                   # name, and kept by the one thing that is allowed to have it.
                   HUB_SLUG}
@@ -1390,6 +1393,20 @@ def build(hub: Any) -> list[Route]:
         # page would resolve one level too high. Redirecting once fixes the lot.
         return RedirectResponse(f"/ui/{request.path_params['slug']}/", status_code=307)
 
+    async def integrate(request: Request) -> Response:
+        """The brief for making an app work here, as something to copy.
+
+        The same text the `mcphub` backend serves as an MCP prompt. Here too
+        because the person with an app in front of them is often not the thing
+        that will do the work, and telling them "call a prompt on a connector"
+        is a worse answer than a button.
+        """
+        if not require_user(request):
+            return redirect_to_login(request)
+        return render(request, "integrate.html",
+                      prompt=integration_prompt(hub.settings.public_url),
+                      prompt_name=PROMPT_NAME, hub_slug=HUB_SLUG)
+
     # ── accounts ──────────────────────────────────────────────────────────
 
     async def accounts(request: Request) -> Response:
@@ -1522,6 +1539,7 @@ def build(hub: Any) -> list[Route]:
         Route("/accounts/new", account_create, methods=["POST"]),
         Route("/accounts/{user_id:int}", account_update, methods=["POST"]),
         Route("/accounts/{user_id:int}/delete", account_delete, methods=["POST"]),
+        Route("/integrate", integrate),
         Route("/registry", registry_search),
         Route("/registry/add", registry_add, methods=["GET", "POST"]),
         Route("/login", login, methods=["GET", "POST"]),

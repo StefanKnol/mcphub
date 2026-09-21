@@ -307,14 +307,16 @@ An administrator holds every backend at `admin` without a grant row.
 
 ### Storage
 
-A plugin that says it keeps something gets a directory of its own at
+A backend that keeps something gets a directory of its own at
 `$MCPHUB_DATA_DIR/apps/<slug>`, inside the data volume, so it is backed up with
-everything else. The path is shown on the backend's **App** settings page.
+everything else. It is opt-in and the default is no: most wrapped servers keep
+their data somewhere they already chose, and a path the hub names but nothing
+uses is clutter on every settings page.
 
-It is opt-in — a plugin overrides `uses_storage()` — and the default is no. A
-server the hub merely proxies keeps its data wherever it already keeps it, and
-a path the hub names but cannot hand across a container boundary is a setting
-that looks like a feature, on the settings page of every server anyone wraps.
+A wrapped server is asked on its **App** page — **Give this server a data
+directory**, and optionally the name of the variable it wants the path in
+(`DB_PATH`, `STATE_DIR`), which saves writing `DB_PATH=$MCPHUB_STORAGE` by hand.
+A plugin answers for itself by overriding `uses_storage()`.
 
 **A server the hub launches** finds the path in `MCPHUB_STORAGE`. Almost no
 server asks for its data directory under that name — it wants `DB_PATH` or
@@ -563,6 +565,13 @@ deleting is not.
 attach one directly. The pages ship with the hub rather than being fetched, so
 they describe the build you are running. They live in `src/mcphub/data/docs/`;
 adding a file there adds a page, with no list to update.
+
+**A brief for making an app.** One MCP prompt, `make_it_an_mcphub_app`, to hand
+an assistant working in an app's own repository: an MCP server, tool
+annotations, storage, the identity headers, app grants, shipping — mostly as
+pointers back into the pages, so it stays in step with the build. The same text
+is on the **Make an app** page with a copy button, for pasting somewhere with
+no connector to this hub.
 
 **Managing the hub.**
 

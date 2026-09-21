@@ -103,6 +103,9 @@
   .legend { margin:8px 0 0; padding:0; list-style:none;
             color:var(--muted); font-size:13px; line-height:1.55; }
   .legend strong { color:var(--ink); font-weight:600; }
+  pre.prompt { white-space:pre-wrap; word-break:break-word; margin:12px 0 0; padding:14px;
+               background:var(--bg); border:1px solid var(--line); border-radius:8px;
+               font-size:13px; line-height:1.55; max-height:60vh; overflow-y:auto; }
   .legend li + li { margin-top:5px; }
   .path { margin:4px 0 0; }
   .path code { background:var(--bg); border:1px solid var(--line); border-radius:6px;
@@ -140,7 +143,7 @@
 <header><div class="bar">
   <strong>mcphub</strong>
   {% if user %}<nav>
-    <a href="/">Backends</a>{% if is_admin %}<a href="/accounts">Accounts</a>{% endif %}<a href="/account">Account</a>
+    <a href="/">Backends</a><a href="/integrate">Make an app</a>{% if is_admin %}<a href="/accounts">Accounts</a>{% endif %}<a href="/account">Account</a>
     <form method="post" action="/logout" style="display:inline"><button style="padding:2px 10px;font-size:13px">Sign out</button></form>
   </nav>{% endif %}
 </div></header>

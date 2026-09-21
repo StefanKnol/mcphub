@@ -184,8 +184,15 @@ def test_the_storage_page_names_the_variable_that_is_actually_set():
     assert f"${storage.ENV_VAR}/" in flat("storage"), "the expansion example must be the real name"
 
 
-def test_the_storage_page_names_the_real_config_key():
-    assert storage.PER_VERSION in flat("storage")
+def test_the_storage_page_names_the_boxes_that_are_really_there():
+    """Words on the page and words on the form have to match, or an instruction
+    sends someone looking for a tick box that is not there."""
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN as PROXY
+
+    page = flat("storage")
+    for key in (storage.ENABLED, storage.CUSTOM_VAR, storage.PER_VERSION):
+        label = next(f.label for f in PROXY.fields if f.key == key)
+        assert label in page, key
 
 
 def test_the_storage_page_shows_the_hook_a_plugin_actually_overrides():
@@ -198,15 +205,14 @@ def test_the_storage_page_shows_the_hook_a_plugin_actually_overrides():
     assert "def uses_storage(self, instance)" in flat("storage")
 
 
-def test_the_storage_page_says_a_proxied_server_gets_none():
-    """Which is the behaviour, and the thing someone will otherwise report as
-    a bug when the section is missing from their settings page."""
-    from mcphub.plugins.builtin.mcpproxy import PLUGIN as PROXY
+def test_the_storage_page_says_it_is_off_until_asked_for():
+    """Which is the behaviour, and the thing someone will otherwise report as a
+    bug when the section is missing from their settings page."""
     from mcphub.plugins.base import BackendInstance
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN as PROXY
 
-    instance = BackendInstance(slug="s", title="t", plugin_id=PROXY.id)
-    assert PROXY.uses_storage(instance) is False
-    assert "proxies gets none" in flat("storage")
+    assert PROXY.uses_storage(BackendInstance(slug="s", title="t", plugin_id=PROXY.id)) is False
+    assert "the default is no" in flat("storage")
 
 
 def test_the_levels_page_lists_the_levels_that_exist():

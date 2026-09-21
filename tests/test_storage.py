@@ -388,3 +388,71 @@ async def test_a_backend_whose_plugin_wants_none_is_started_without_one(hub):
 
     built = await started(hub, Quiet(), per_version=False, versions=("",))
     assert built[0][1] is None
+
+
+# ── a wrapped server asking for one ───────────────────────────────────────
+
+def proxied(**config) -> BackendInstance:
+    return BackendInstance(slug="dictionary", title="D", plugin_id="mcp-proxy",
+                           config=config, storage=Path("/data/apps/dictionary"))
+
+
+def test_a_wrapped_server_gets_none_until_it_is_asked_for():
+    """Whether a wrapped server writes anything is not something the hub can
+    work out — only whoever chose that server knows."""
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN
+
+    assert PLUGIN.uses_storage(proxied()) is False
+    assert PLUGIN.uses_storage(proxied(**{storage.ENABLED: True})) is True
+
+
+def test_the_path_always_arrives_under_the_hubs_own_name():
+    from mcphub.plugins.builtin.mcpproxy import _collect_env
+
+    env = _collect_env(proxied(**{storage.ENABLED: True}))
+    assert env[storage.ENV_VAR] == "/data/apps/dictionary"
+
+
+def test_a_named_variable_is_set_to_the_same_path():
+    """The point of naming one: `DB_PATH=$MCPHUB_STORAGE` in the environment box
+    works, but for someone wiring up an npm package it is a piece of syntax to
+    get right for no reason."""
+    from mcphub.plugins.builtin.mcpproxy import _collect_env
+
+    env = _collect_env(proxied(**{storage.ENABLED: True, storage.CUSTOM_VAR: "DB_PATH"}))
+    assert env["DB_PATH"] == "/data/apps/dictionary"
+    assert env[storage.ENV_VAR] == "/data/apps/dictionary"
+
+
+def test_naming_nothing_sets_nothing_extra():
+    from mcphub.plugins.builtin.mcpproxy import _collect_env
+
+    env = _collect_env(proxied(**{storage.ENABLED: True, storage.CUSTOM_VAR: "  "}))
+    assert set(env) == {storage.ENV_VAR}
+
+
+def test_the_named_variable_wins_over_a_hand_written_one():
+    """Two instructions about the same variable, one of them typed into a box
+    that also holds nine others. The specific field is the later answer."""
+    from mcphub.plugins.builtin.mcpproxy import _collect_env
+
+    env = _collect_env(proxied(**{storage.ENABLED: True, storage.CUSTOM_VAR: "DB_PATH",
+                                  "env": "DB_PATH=/somewhere/else"}))
+    assert env["DB_PATH"] == "/data/apps/dictionary"
+
+
+def test_the_fields_that_configure_it_are_on_the_app_page():
+    """It is a fact about the app, not about how the hub reaches its MCP."""
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN
+
+    for key in (storage.ENABLED, storage.CUSTOM_VAR, storage.PER_VERSION):
+        field = next(f for f in PLUGIN.fields if f.key == key)
+        assert field.page == "app", key
+
+
+def test_the_extra_fields_only_appear_once_storage_is_on():
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN
+
+    for key in (storage.CUSTOM_VAR, storage.PER_VERSION):
+        field = next(f for f in PLUGIN.fields if f.key == key)
+        assert field.show_if == (storage.ENABLED, "true"), key

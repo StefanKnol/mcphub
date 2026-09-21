@@ -21,6 +21,18 @@ directly rather than calling a tool for it.
 
 All three are read-only, so they work at every level including `viewer`.
 
+## A brief for making an app
+
+There is also one MCP prompt, `make_it_an_mcphub_app`: a short brief to hand an
+assistant working in an app's own repository, which walks it through an MCP
+server, tool annotations, storage, the identity headers, app grants and
+shipping — mostly as pointers back into the pages above, so it stays in step
+with the build rather than repeating it.
+
+It takes an optional `app` argument naming what to work on. The same text is on
+the hub's **Make an app** page with a copy button, for pasting somewhere that
+has no connector to this hub.
+
 ## Managing the hub
 
 | Tool | Level | |

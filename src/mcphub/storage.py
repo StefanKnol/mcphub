@@ -33,6 +33,24 @@ ENV_VAR = "MCPHUB_STORAGE"
 
 DIRNAME = "apps"
 
+ENABLED = "storage_enabled"
+"""Config key asking the hub for a directory for this backend.
+
+Off by default. A plugin answers `uses_storage()` from whatever it likes; the
+generic proxy answers it from this, because whether a wrapped server writes
+anything is not something the hub can work out on its own — only the person who
+chose that server knows."""
+
+CUSTOM_VAR = "storage_var"
+"""Config key naming a second environment variable to set to the same path.
+
+Almost no server asks for its data directory as MCPHUB_STORAGE; it wants
+DB_PATH or STATE_DIR or whatever it chose. Writing `DB_PATH=$MCPHUB_STORAGE`
+into the environment box works and is what a plugin author would do, but for
+someone wiring up an npm package it is a piece of syntax to get right for no
+reason. Typing the variable's name is the same instruction without the syntax.
+"""
+
 PER_VERSION = "storage_per_version"
 """Config key asking for a directory per version rather than one shared.
 
