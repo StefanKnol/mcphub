@@ -1,0 +1,112 @@
+{# One input per declared field. Shared by the MCP and App settings pages so
+   both get the same conditional showing, secret handling and clear boxes
+   rather than two copies that drift. Expects `fields` and `filled_marker`. #}
+{% for item in fields %}
+{% if item.field.group and (loop.first or loop.previtem.field.group != item.field.group) %}
+<h2 class="group" data-group="{{ item.field.group }}">{{ item.field.group }}</h2>
+{% endif %}
+{# Single-quoted because tojson emits double quotes and escapes apostrophes. #}
+<div class="field" data-field-key="{{ item.field.key }}"
+     {% if item.field.group %}data-group="{{ item.field.group }}"{% endif %}
+     {% if item.field.show_if %}data-show-if-field="{{ item.field.show_if[0] }}"
+     data-show-if-value='{{ item.wanted|tojson }}'{% endif %}>
+  {% if item.field.type == "select" %}
+    <label for="f-{{ item.field.key }}">{{ item.field.label }}</label>
+    <div class="select-wrap">
+      <select id="f-{{ item.field.key }}" name="{{ item.field.key }}">
+        {% if item.field.choices_from_plugin %}
+          {% if not item.options %}
+          <option value="">{% if row %}Could not reach the server to list these{% else %}Save this backend first, then come back to choose{% endif %}</option>
+          {% endif %}
+          {% for opt in item.options %}
+          <option value="{{ opt.value }}" {% if item.value|string == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        {% else %}
+          {% for value, label in item.choices %}
+          <option value="{{ value }}" {% if item.value|string == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        {% endif %}
+      </select>
+    </div>
+  {% elif item.field.type == "multiselect" %}
+    <label>{{ item.field.label }}</label>
+    {% if item.field.help %}<p class="help">{{ item.field.help }}</p>{% endif %}
+    {% if item.options %}
+      <div class="toolbar">
+        <button type="button" class="tiny" data-all="{{ item.field.key }}">Select all</button>
+        <button type="button" class="tiny" data-none="{{ item.field.key }}">Select none</button>
+        <input type="search" class="filter" data-for="{{ item.field.key }}" placeholder="Filter&hellip;">
+        <span class="note count" id="count-{{ item.field.key }}"></span>
+      </div>
+      <div class="picker" data-group="{{ item.field.key }}">
+        {% for opt in item.options %}
+        <div class="pick" data-label="{{ opt.value }} {{ opt.help }}">
+          <input type="checkbox" id="o-{{ item.field.key }}-{{ loop.index }}"
+                 name="{{ item.field.key }}" value="{{ opt.value }}"
+                 {% if opt.value in item.selected %}checked{% endif %}>
+          <label for="o-{{ item.field.key }}-{{ loop.index }}">
+            <span class="mono">{{ opt.label }}</span>
+            {% if opt.help %}<span class="note"> — {{ opt.help }}</span>{% endif %}
+          </label>
+        </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="help">
+        {% if not row %}Save this backend first, then come back to choose which tools to expose.
+        {% else %}Could not reach the upstream server to list its tools. Fix the connection and reload.{% endif %}
+      </p>
+      {% for value in item.selected %}
+        <input type="hidden" name="{{ item.field.key }}" value="{{ value }}">
+      {% endfor %}
+      {% if item.selected %}<p class="help">Keeping {{ item.selected|length }} previously selected tool(s).</p>{% endif %}
+    {% endif %}
+  {% elif item.field.type == "textarea" %}
+    <label for="f-{{ item.field.key }}">{{ item.field.label }}{% if not item.field.required %}
+      <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>
+    <textarea id="f-{{ item.field.key }}" name="{{ item.field.key }}" rows="4" spellcheck="false"
+              placeholder="{% if item.withheld %}{{ filled_marker }}{% else %}{{ item.field.placeholder }}{% endif %}"
+    >{% if not item.withheld %}{{ item.value }}{% endif %}</textarea>
+  {% elif item.field.type == "bool" %}
+    <div class="checkline">
+      <input type="checkbox" id="f-{{ item.field.key }}" name="{{ item.field.key }}"
+             {% if item.value %}checked{% endif %}>
+      <label for="f-{{ item.field.key }}">{{ item.field.label }}</label>
+    </div>
+  {% else %}
+    <label for="f-{{ item.field.key }}">{{ item.field.label }}{% if not item.field.required %}
+      <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>
+    <input id="f-{{ item.field.key }}" name="{{ item.field.key }}"
+           type="{% if item.field.type == 'password' %}password{% elif item.field.type == 'number' %}number{% else %}text{% endif %}"
+           value="{% if not item.withheld %}{{ item.value }}{% endif %}"
+           {% if item.withheld %}placeholder="{{ filled_marker }}"
+           {% elif item.field.placeholder %}placeholder="{{ item.field.placeholder }}"{% endif %}
+           {# `new-password` only where the control really is a password box: on a #}
+           {# text input it invites the browser's generate-a-password bubble over  #}
+           {# a field that wants a hostname. Encrypted-but-shown fields settle for #}
+           {# suppressing autofill.                                                #}
+           {% if item.field.type == "password" %}autocomplete="new-password"
+           {% elif item.field.secret %}autocomplete="off"{% endif %}
+           {% if item.field.required and not item.withheld %}required{% endif %}>
+  {% endif %}
+  {# Same class the client-side validator uses, so a refusal from the server #}
+  {# and one from the browser look like the same thing, because they are.     #}
+  {% for message in (field_errors or {}).get(item.field.key, []) %}
+    <p class="field-error">{{ message }}</p>
+  {% endfor %}
+  {% if item.field.help and item.field.type != "multiselect" %}<p class="help">{{ item.field.help }}</p>{% endif %}
+  {# A withheld value renders an empty box either way, so say which empty box #}
+  {# this is. Clearing is offered only where it can succeed: a required field #}
+  {# has no valid empty state, so the way to change it is to replace it, and  #}
+  {# a checkbox that can only ever return "this is required" is not an offer. #}
+  {% if item.withheld %}
+    <p class="help">Saved, and not shown. Leave it blank to keep the current value.</p>
+    {% if not item.field.required %}
+    <div class="checkline" style="margin-top:6px">
+      <input type="checkbox" id="clear-{{ item.field.key }}" name="clear_{{ item.field.key }}">
+      <label for="clear-{{ item.field.key }}">Clear the saved value</label>
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
+{% endfor %}

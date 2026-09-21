@@ -184,13 +184,29 @@ def test_the_storage_page_names_the_variable_that_is_actually_set():
     assert f"${storage.ENV_VAR}/" in flat("storage"), "the expansion example must be the real name"
 
 
-def test_the_storage_page_names_the_real_toggle():
-    """The words on the page and the words on the form have to match, or the
-    instruction sends someone looking for a tick box that is not there."""
-    from mcphub.plugins.builtin.mcpproxy import PLUGIN as PROXY
+def test_the_storage_page_names_the_real_config_key():
+    assert storage.PER_VERSION in flat("storage")
 
-    label = next(f.label for f in PROXY.fields if f.key == storage.PER_VERSION)
-    assert label in flat("storage")
+
+def test_the_storage_page_shows_the_hook_a_plugin_actually_overrides():
+    """The page tells a plugin author to write one method. It has to be the
+    method the hub calls, or the instruction produces a plugin with no storage
+    and nothing saying why."""
+    from mcphub.plugins.base import PluginDefaults
+
+    assert hasattr(PluginDefaults, "uses_storage")
+    assert "def uses_storage(self, instance)" in flat("storage")
+
+
+def test_the_storage_page_says_a_proxied_server_gets_none():
+    """Which is the behaviour, and the thing someone will otherwise report as
+    a bug when the section is missing from their settings page."""
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN as PROXY
+    from mcphub.plugins.base import BackendInstance
+
+    instance = BackendInstance(slug="s", title="t", plugin_id=PROXY.id)
+    assert PROXY.uses_storage(instance) is False
+    assert "proxies gets none" in flat("storage")
 
 
 def test_the_levels_page_lists_the_levels_that_exist():

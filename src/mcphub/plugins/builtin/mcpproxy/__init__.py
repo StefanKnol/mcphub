@@ -230,7 +230,8 @@ class McpProxyPlugin(PluginDefaults):
                     show_if=(CONNECTION_KEY, "url"),
                     help="Turn off only for an https upstream with a self-signed certificate."),
         ConfigField(
-            "ui_url", "Web interface", required=False, placeholder="http://10.0.0.50:8080",
+            "ui_url", "Web interface", required=False, page="app",
+            placeholder="http://10.0.0.50:8080",
             help=(
                 "If this server also has a web interface, its address. Leave blank if it has none. "
                 "Independent of how MCP itself is reached."
@@ -238,7 +239,7 @@ class McpProxyPlugin(PluginDefaults):
         ),
         ConfigField(
             "ui_proxy", "Serve the interface through the hub", type="bool", default=True,
-            required=False, show_if=None,
+            required=False, show_if=None, page="app",
             help=(
                 "Puts it at /ui/<name>, behind this hub's sign-in and the same per-account grants "
                 "as the MCP endpoint — so an interface with no login of its own gets one, without "
@@ -248,7 +249,8 @@ class McpProxyPlugin(PluginDefaults):
             ),
         ),
         ConfigField(
-            "ui_trusted", "This is an app I control", type="bool", default=False, required=False,
+            "ui_trusted", "This is an app I control", type="bool", default=False,
+            required=False, page="app",
             help=(
                 "Serves the interface on the hub's own origin instead of sandboxing it. "
                 "An app with module scripts, its own login, or anything fetched with CORS "
@@ -265,18 +267,6 @@ class McpProxyPlugin(PluginDefaults):
             ),
         ),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),
-        ConfigField(
-            storage.PER_VERSION, "Give each version its own storage", type="bool", default=False,
-            help=(
-                "Off by default: every version of this backend, and every account using it, "
-                "shares one storage directory — which is what you want when the data is the "
-                "thing people are working on together, and someone is trying a new version "
-                "of the server that serves it. Turn it on for a backend whose versions keep "
-                "something they cannot share, such as an index whose format changed. "
-                "Note what this does not fix: two versions sharing a directory also share "
-                "any schema migration one of them applies, and the hub cannot undo that."
-            ),
-        ),
         ConfigField(
             ALLOW_KEY, "Tools to expose", type="multiselect", required=False,
             help=(

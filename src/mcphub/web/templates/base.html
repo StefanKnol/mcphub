@@ -94,6 +94,12 @@
   .pick.grant select { padding:4px 26px 4px 9px; font-size:12px; }
   .pick.grant .select-wrap::after { right:10px; width:6px; height:6px; }
   .pick.grant:not(:has(input:checked)) .select-wrap { opacity:.4; }
+  .tabs { display:flex; gap:4px; margin:0 0 16px; border-bottom:1px solid var(--line); }
+  .tabs a { padding:8px 14px; font-size:14px; font-weight:500; text-decoration:none;
+            color:var(--muted); border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tabs a:hover { color:var(--ink); }
+  .tabs a.on { color:var(--ink); border-bottom-color:var(--accent); }
+  .card.saved { border-color:var(--ok); color:var(--ok); padding:12px 16px; font-size:14px; }
   .legend { margin:8px 0 0; padding:0; list-style:none;
             color:var(--muted); font-size:13px; line-height:1.55; }
   .legend strong { color:var(--ink); font-weight:600; }

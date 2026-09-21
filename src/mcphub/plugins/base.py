@@ -126,6 +126,17 @@ class ConfigField:
     interfaces a router actually has, the databases a server actually holds —
     which a literal list cannot express."""
 
+    page: str = "mcp"
+    """Which settings page this field belongs on: "mcp" or "app".
+
+    A backend is two things that happen to share a row — an MCP server, and
+    sometimes an app with a web interface — and asking about both on one page
+    produced a form where the address of a web interface sat between an auth
+    header and a tool list. Anything about the app side goes on "app"; that
+    page only appears once the backend exists, since it has an identity of its
+    own to configure.
+    """
+
     group: str = ""
     """Heading to file this field under. Consecutive fields sharing one are
     drawn beneath it, and the heading disappears when every field under it is
@@ -357,6 +368,16 @@ class PluginDefaults:
 
     def variant(self, instance: BackendInstance, version: str) -> BackendInstance:
         return instance
+
+    def uses_storage(self, instance: BackendInstance) -> bool:
+        """Whether this backend should be given a directory on the data volume.
+
+        False by default, so nothing gets a directory it has no way to use. A
+        server the hub merely proxies keeps its data wherever it already keeps
+        it; the hub naming a path it cannot hand over is a setting that looks
+        like a feature. A plugin that writes something says so here.
+        """
+        return False
 
     review_before_enable: bool = False
     """Create new backends of this kind disabled.

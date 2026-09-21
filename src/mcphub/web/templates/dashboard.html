@@ -55,6 +55,8 @@ connector so their tools stay in separate lists.</p>
              title="Opens the backend's own address directly, outside the hub">Open &#8599;</a>
         {% endif %}
         {% if can_manage %}<a class="btn" href="/backends/{{ b.slug }}">Settings</a>{% endif %}
+        {% if can_manage and b.has_app_page %}<a class="btn" href="/backends/{{ b.slug }}/app"
+          title="Its web interface, its own storage, and what else on this hub it may use">App</a>{% endif %}
         <button type="button" class="test" data-slug="{{ b.slug }}">Test</button>
         {% if can_manage and b.ui_url %}<button type="button" class="uicheck" data-slug="{{ b.slug }}"
           title="Fetch the interface and report anything that would stop it working through the hub">Check UI</button>{% endif %}

@@ -210,8 +210,12 @@ def install(server: Any, hub: Any) -> None:
             config, secrets, chosen_title = _from_url(url, environment or {})
 
         instance = BackendInstance(slug=slug, title=title or chosen_title,
-                                   plugin_id=plugin.id, config=config, secrets=secrets,
-                                   storage=storage.path_for(hub.settings.data_dir, slug))
+                                   plugin_id=plugin.id, config=config, secrets=secrets)
+        if plugin.uses_storage(instance):
+            from dataclasses import replace
+
+            instance = replace(instance,
+                               storage=storage.path_for(hub.settings.data_dir, slug))
         try:
             config.update(await plugin.on_save(instance) or {})
         except Exception:  # noqa: BLE001 - the backend is still worth creating
@@ -228,7 +232,7 @@ def install(server: Any, hub: Any) -> None:
             "slug": slug,
             "title": instance.title,
             "enabled": False,
-            "storage": str(instance.storage),
+            "storage": str(instance.storage) if instance.storage else None,
             "tools_found": tools,
             # An empty list means two very different things, and saying which
             # is the difference between "this server has nothing" and "nobody

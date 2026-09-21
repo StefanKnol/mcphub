@@ -269,8 +269,13 @@ def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: b
             (slug, title, int(enabled), json.dumps(config), blob, utcnow(), row["id"]),
         )
     # Created at save rather than only at mount, so the path is there to be
-    # bind-mounted before the thing that needs it is started.
-    storage.ensure(hub.settings.data_dir, slug)
+    # bind-mounted before the thing that needs it is started — but only for a
+    # plugin that says it writes something.
+    plugin = hub.registry.get(plugin_id)
+    if plugin is not None and plugin.uses_storage(
+            BackendInstance(slug=slug, title=title, plugin_id=plugin_id,
+                            config=config, secrets=secrets)):
+        storage.ensure(hub.settings.data_dir, slug)
 
 
 def stored_value(instance: BackendInstance | None, key: str) -> Any:
@@ -282,8 +287,13 @@ def stored_value(instance: BackendInstance | None, key: str) -> Any:
     return instance.config.get(key)
 
 
+def on_page(plugin: Any, instance: BackendInstance | None, page: str) -> list[Any]:
+    """The declared fields belonging to one settings page."""
+    return [f for f in plugin.fields_for(instance) if f.page == page]
+
+
 async def form_values(plugin: Any, instance: BackendInstance | None,
-                      posted: Any = None) -> list[dict[str, Any]]:
+                      posted: Any = None, page: str = "mcp") -> list[dict[str, Any]]:
     """One render-ready entry per field of this backend's form.
 
     `posted` is the submission being redisplayed after a validation error. Its
@@ -296,7 +306,7 @@ async def form_values(plugin: Any, instance: BackendInstance | None,
     needs marking, or the box reads as empty when it is not.
     """
     values = []
-    for f in plugin.fields_for(instance):
+    for f in on_page(plugin, instance, page):
         options: list[Any] = []
         selected: list[str] = []
         saved = stored_value(instance, f.key)
@@ -391,12 +401,17 @@ def place_errors(problems: list[FieldError], keys: set[str]) -> tuple[list[str],
     return banner, beside
 
 
-def split_fields(plugin: Any, form: Any, existing: BackendInstance | None) -> tuple[dict, dict, list[str]]:
+def split_fields(plugin: Any, form: Any, existing: BackendInstance | None,
+                 page: str = "mcp") -> tuple[dict, dict, list[str]]:
+    """Read one page's worth of the form. Fields on the other page are not here,
+    so they are neither read nor cleared — a checkbox missing from a submission
+    is indistinguishable from one that was unticked, and the App page saving the
+    MCP page's tick boxes as off is exactly how that goes wrong."""
     config: dict[str, Any] = {}
     secret: dict[str, Any] = dict(existing.secrets) if existing else {}
     errors: list[str] = []
 
-    fields = list(plugin.fields_for(existing))
+    fields = on_page(plugin, existing, page)
     for f in fields:
         if f.type == "multiselect":
             config[f.key] = [str(v) for v in form.getlist(f.key)]
@@ -628,6 +643,7 @@ def build(hub: Any) -> list[Route]:
                 "icon": _backend_icon(row),
                 "initials": _initials(row["title"]),
                 "level": level_for(user, row["slug"]),
+                "has_app_page": row["slug"] != HUB_SLUG,
                 "version": _config_value(row, "upstream_version"),
                 "latest": _config_value(row, "latest_version"),
                 "ui_url": _config_value(row, "ui_url"),
@@ -692,19 +708,11 @@ def build(hub: Any) -> list[Route]:
                 instance = hub.instance_from_row(row)
 
         if request.method == "GET":
-            # The page tells the administrator to bind-mount this path, so it
-            # should be there when they go and do it — including for a backend
-            # that predates storage and has not been saved since.
-            if row is not None:
-                storage.ensure(hub.settings.data_dir, row["slug"])
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[], field_errors={},
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
-                          storage_path=instance.storage if instance else None,
-                          storage_var=storage.ENV_VAR,
-                          **app_access(row), levels=roles.LEVELS,
-                          level_help=roles.DESCRIPTIONS, default_level=roles.DEFAULT,
+                          has_app_page=bool(row) and slug != HUB_SLUG,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -759,10 +767,7 @@ def build(hub: Any) -> list[Route]:
                           errors=errors + banner, field_errors=beside,
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
-                          storage_path=instance.storage if instance else None,
-                          storage_var=storage.ENV_VAR,
-                          **app_access(row), levels=roles.LEVELS,
-                          level_help=roles.DESCRIPTIONS, default_level=roles.DEFAULT,
+                          has_app_page=bool(row) and slug != HUB_SLUG,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -783,21 +788,79 @@ def build(hub: Any) -> list[Route]:
             hub.apps.rename(slug, new_slug)
             await hub.mounts.unmount(slug)
 
-        # After the save, so a grant can name a backend that is only now called
-        # what it is called. Replaces rather than merges: the picker shows every
-        # candidate, so what came back is the whole answer.
-        if row is not None:
-            wanted = {str(v) for v in form.getlist("app_grant")}
-            hub.apps.set_grants(new_slug, {
-                target: str(form.get(f"app_level-{target}", ""))
-                for target in wanted
-            })
 
         error = await hub.remount(new_slug)
         if error:
             return render(request, "error.html",
                           message=f"Saved, but the backend could not be started: {error}", status_code=500)
         return RedirectResponse("/", status_code=303)
+
+    async def backend_app_form(request: Request) -> Response:
+        """Everything about a backend as an *app*, kept off its MCP settings.
+
+        A backend is two things sharing a row: an MCP server, and sometimes an
+        app with a web interface, files of its own, and access to other
+        backends. Asking about both on one page put the address of a web
+        interface between an auth header and a tool list.
+        """
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not may_manage_backends(user):
+            return denied(request, "This account cannot configure backends.")
+
+        slug = request.path_params["slug"]
+        row = hub.backend_row(slug)
+        if row is None:
+            return render(request, "error.html", message=f"No backend named {slug!r}.",
+                          status_code=404)
+        plugin = hub.registry.get(row["plugin_id"])
+        if plugin is None:
+            return render(request, "error.html",
+                          message=f"Plugin {row['plugin_id']!r} is not installed.",
+                          status_code=404)
+        instance = hub.instance_from_row(row)
+
+        def page(fields: Any, errors: list[str], field_errors: dict, status: int = 200) -> Response:
+            # The page tells the administrator to bind-mount this path, so it
+            # should be there when they go and do it — including for a backend
+            # that predates storage and has not been saved since.
+            if instance.storage is not None:
+                storage.ensure(hub.settings.data_dir, slug)
+            return render(request, "app_form.html", plugin=plugin, row=row, slug=slug,
+                          fields=fields, errors=errors, field_errors=field_errors,
+                          orphans=[], storage_path=instance.storage,
+                          storage_var=storage.ENV_VAR, **app_access(row),
+                          levels=roles.LEVELS, level_help=roles.DESCRIPTIONS,
+                          default_level=roles.DEFAULT, status_code=status)
+
+        if request.method == "GET":
+            return page(await form_values(plugin, instance, page="app"), [], {})
+
+        form = await request.form()
+        posted, secret, errors = split_fields(plugin, form, instance, page="app")
+        config = {**instance.config, **posted}
+        proposed = BackendInstance(slug=slug, title=row["title"], plugin_id=plugin.id,
+                                   config=config, secrets=secret, storage=instance.storage)
+        problems = [] if errors else run_plugin_validation(plugin, proposed)
+        if errors or problems:
+            banner, beside = place_errors(problems, {f.key for f in on_page(plugin, instance, "app")})
+            return page(await form_values(plugin, instance, posted=form, page="app"),
+                        errors + banner, beside, status=400)
+
+        _save_backend(hub, slug=slug, plugin_id=plugin.id, title=row["title"],
+                      enabled=bool(row["enabled"]), config=config, secrets=secret, row=row)
+        # Replaces rather than merges: the picker shows every candidate, so
+        # what came back is the whole answer.
+        wanted = {str(v) for v in form.getlist("app_grant")}
+        hub.apps.set_grants(slug, {target: str(form.get(f"app_level-{target}", ""))
+                                   for target in wanted})
+        error = await hub.remount(slug)
+        if error:
+            return render(request, "error.html",
+                          message=f"Saved, but the backend could not be restarted: {error}",
+                          status_code=500)
+        return RedirectResponse(f"/backends/{slug}/app?saved=1", status_code=303)
 
     async def backend_test(request: Request) -> Response:
         """Live connectivity check, for two callers that mean different things.
@@ -1431,6 +1494,7 @@ def build(hub: Any) -> list[Route]:
         Route("/account", account, methods=["GET", "POST"]),
         Route("/backends/new", backend_form, methods=["GET", "POST"]),
         Route("/backends/{slug}", backend_form, methods=["GET", "POST"]),
+        Route("/backends/{slug}/app", backend_app_form, methods=["GET", "POST"]),
         Route("/backends/{slug}/test", backend_test, methods=["POST"]),
         Route("/backends/{slug}/refresh", backend_refresh, methods=["POST"]),
         Route("/backends/{slug}/versions", backend_versions),

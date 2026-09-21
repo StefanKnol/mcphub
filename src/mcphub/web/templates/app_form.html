@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}{{ row.title }} — app — mcphub{% endblock %}
+{% block body %}
+{% set filled_marker = "••••••••" %}
+<h1>{{ row.title }}</h1>
+<p class="sub">What this backend is besides an MCP server: a web interface, files of its
+  own, and whatever else on this hub it is allowed to use.</p>
+<nav class="tabs">
+  <a href="/backends/{{ slug }}">MCP server</a>
+  <a class="on" href="/backends/{{ slug }}/app">App</a>
+</nav>
+
+{% if errors %}<div class="errors">
+  {% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+{% if request.query_params.get("saved") %}
+<div class="card saved">Saved. The backend was restarted with it.</div>
+{% endif %}
+
+<form method="post" class="card validated">
+  {% if fields %}
+    {% include "_fields.html" %}
+  {% else %}
+  <p class="help">This kind of backend declares no app settings of its own.</p>
+  {% endif %}
+
+  <div class="field">
+    <label>Backends this app may use</label>
+    <p class="help">Its own access, separate from the access of whoever is using it. The
+      hub gives this backend an identity and one credential per grant, and hands them over
+      when it starts — in <code>MCPHUB_BACKENDS</code> for a server the hub launches, in the
+      <code>X-Mcphub-Backends</code> header for one it connects to or serves a page for.
+      Leave everything unticked if this app only answers and never calls.</p>
+    {% if app_targets %}
+      <div class="picker">
+        {% for b in app_targets %}
+        <div class="pick grant">
+          <input type="checkbox" id="a-{{ slug }}-{{ b.slug }}" name="app_grant" value="{{ b.slug }}"
+                 {% if b.slug in app_grants %}checked{% endif %}>
+          <label for="a-{{ slug }}-{{ b.slug }}">
+            <span class="mono">{{ b.slug }}</span><span class="note"> — {{ b.title }}</span>
+          </label>
+          <div class="select-wrap">
+            <select name="app_level-{{ b.slug }}" aria-label="Level on {{ b.slug }}">
+              {% for level in levels %}
+              <option value="{{ level }}" title="{{ level_help[level] }}"
+                {% if app_grants.get(b.slug, default_level) == level %}selected{% endif %}>{{ level }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <ul class="legend">
+        {% for level in levels %}
+        <li><strong>{{ level }}</strong> — {{ level_help[level] }}</li>
+        {% endfor %}
+      </ul>
+      <p class="help">A viewer using an app that holds <span class="mono">admin</span> on
+        another backend reaches it as the app. The app is told the person's own level in
+        <code>X-Mcphub-Role</code> and decides what to do with it — the hub cannot, because
+        over the app's own API it cannot tell an edit from a search.</p>
+    {% else %}
+      <p class="help">There is no other backend to grant yet.</p>
+    {% endif %}
+  </div>
+
+  {% if storage_path %}
+  <div class="field">
+    <label>Storage</label>
+    <p class="help">A directory of this backend's own, on the hub's data volume, kept
+      across restarts and backed up with everything else.</p>
+    <p class="path"><code>{{ storage_path }}</code></p>
+    <ul class="legend">
+      <li><strong>A server the hub launches</strong> finds it in
+        <code>{{ storage_var }}</code>, and <code>${{ storage_var }}</code> in any
+        environment value on the MCP page is replaced with it — so
+        <code>DB_PATH=${{ storage_var }}/app.db</code> does what it looks like.</li>
+      <li><strong>A server reached over a URL</strong> is somewhere else, and the hub
+        cannot hand it a directory. Mount this path into that container yourself:
+        <code>-v {{ storage_path }}:/data</code>.</li>
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    <button class="primary" type="submit">Save</button>
+    <a class="btn" href="/">Cancel</a>
+  </div>
+</form>
+{% endblock %}

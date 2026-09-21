@@ -144,7 +144,7 @@ def test_select_fields_are_rendered_by_the_template():
     """A declared type nothing renders is a field that silently becomes a textbox."""
     from pathlib import Path
 
-    template = Path("src/mcphub/web/templates/backend_form.html").read_text()
+    template = Path("src/mcphub/web/templates/_fields.html").read_text()
     assert '"select"' in template and "<select" in template
 
 

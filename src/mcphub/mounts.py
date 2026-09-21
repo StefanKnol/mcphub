@@ -112,7 +112,8 @@ class MountManager:
         # share a directory is one decision in one place.
         shaped = replace(shaped, storage=storage.ensure(
             self._settings.data_dir, instance.slug,
-            version if instance.config.get(storage.PER_VERSION) else ""),
+            version if instance.config.get(storage.PER_VERSION) else "")
+            if plugin.uses_storage(shaped) else None,
             # Minted on first use and held for the life of the process, so a
             # restart rotates them and the database keeps only hashes.
             granted=self._apps.issue(instance.slug) if self._apps else {})

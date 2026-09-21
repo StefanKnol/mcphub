@@ -69,17 +69,26 @@ class Hub:
     def instance_from_row(self, row: Any) -> BackendInstance:
         import json
 
-        return BackendInstance(
+        from dataclasses import replace
+
+        instance = BackendInstance(
             slug=row["slug"],
             title=row["title"],
             plugin_id=row["plugin_id"],
             config=json.loads(row["config_json"]),
             secrets=self.secrets.open(row["secrets_blob"]),
-            # The path, not the directory: reading a backend happens on every
-            # page render, and creating it belongs where it is about to be
-            # used — when the backend is saved, and when it is mounted.
-            storage=storage.path_for(self.settings.data_dir, row["slug"]),
         )
+        plugin = self.registry.get(row["plugin_id"])
+        if plugin is None or not plugin.uses_storage(instance):
+            # A server the hub merely proxies keeps its data wherever it
+            # already keeps it. Naming a path the hub cannot hand over is a
+            # setting that looks like a feature.
+            return instance
+        # The path, not the directory: reading a backend happens on every page
+        # render, and creating it belongs where it is about to be used — when
+        # the backend is saved, and when it is mounted.
+        return replace(instance,
+                       storage=storage.path_for(self.settings.data_dir, row["slug"]))
 
     def current_instance(self, slug: str) -> BackendInstance | None:
         """This backend as it is stored right now, not as it was when mounted."""

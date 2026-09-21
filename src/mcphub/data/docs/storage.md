@@ -1,8 +1,22 @@
 # Storage
 
-Every backend gets a directory of its own at `<data dir>/apps/<slug>`, inside
-the hub's data volume, so it is backed up with everything else. The path is
-shown on the backend's settings page.
+A plugin that keeps something gets a directory of its own at
+`<data dir>/apps/<slug>`, inside the hub's data volume, so it is backed up with
+everything else. The path is shown on the backend's **App** settings page.
+
+It is opt-in, and the default is no:
+
+```python
+class DictionaryPlugin(PluginDefaults):
+    def uses_storage(self, instance) -> bool:
+        return True
+```
+
+A server the hub merely proxies gets none. It keeps its data wherever it
+already keeps it, and a path the hub names but cannot hand across a container
+boundary is a setting that looks like a feature — on the settings page of every
+server anyone ever wraps. If you are writing a plugin that needs somewhere to
+write, say so and you have one.
 
 ## If the hub launches your server
 
@@ -37,8 +51,9 @@ DATA.mkdir(parents=True, exist_ok=True)
 ## If your app runs somewhere else
 
 A backend reached over a URL is in another container or on another machine, and
-the hub cannot hand a directory across that boundary. It creates the directory
-and tells you where it is; mounting it is yours to do:
+the hub cannot hand a directory across that boundary. Where a plugin has asked
+for one, the hub creates it and tells you where it is; mounting it is yours to
+do:
 
 ```
 -v /data/apps/dictionary:/data
@@ -65,14 +80,14 @@ It is not free, and the hub cannot make it free:
   atomically — temp file, then rename — or take a lock.
 
 Where versions keep something they genuinely cannot share, such as a derived
-index whose format changed, the backend can tick **Give each version its own
-storage** and each gets `apps/<slug>@<version>`. That separates the files. It
-does not make a shared dataset safe.
+index whose format changed, a backend can carry `storage_per_version` in its
+config and each version gets `apps/<slug>@<version>`. That separates the files.
+It does not make a shared dataset safe.
 
 ## What the hub does with it
 
-- Creates it when the backend is saved, when its settings page is opened, and
-  when it starts.
+- Creates it when the backend is saved, when its App page is opened, and when
+  it starts — for a plugin that asked for one.
 - Moves it when the backend is renamed.
 - **Leaves it alone when the backend is deleted.** Unmounting is reversible and
   a dropped database is not.

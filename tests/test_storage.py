@@ -1,10 +1,13 @@
 """Where a backend keeps things between restarts.
 
-Each one gets a directory of its own under the data volume. The hub can hand
-that directory to a server it launches, because such a server is its own
-subprocess; it can only *name* it to a backend reached over a URL, which may be
-in another container entirely. That asymmetry is the whole design, and the
-tests below are mostly about not blurring it.
+A plugin that says it writes something gets a directory of its own under the
+data volume. A plugin that says nothing gets none, and a server the hub merely
+proxies says nothing — it keeps its data wherever it already keeps it, and a
+path the hub names but cannot hand over is a setting that looks like a feature.
+
+The hub can hand the directory to a server it starts itself, because such a
+server is its own subprocess. Everything else it can only name. That asymmetry
+is the design, and the tests below are mostly about not blurring it.
 """
 
 import tempfile
@@ -14,7 +17,25 @@ import pytest
 
 from mcphub import storage
 from mcphub.plugins.base import BackendInstance
+from mcphub.plugins.base import CheckResult, PluginDefaults
 from mcphub.plugins.builtin.mcpproxy import _collect_env
+
+
+class Storing(PluginDefaults):
+    """A plugin that keeps something, which is what earns it a directory."""
+
+    id, name, description, fields = "storing", "Storing", "d", ()
+
+    def uses_storage(self, instance) -> bool:
+        return True
+
+    def build(self, instance):
+        from mcp.server.mcpserver import MCPServer
+
+        return MCPServer(instance.title)
+
+    async def check(self, instance):  # pragma: no cover
+        return CheckResult(True, "ok")
 
 
 @pytest.fixture
@@ -147,13 +168,15 @@ def hub():
 
     settings = Settings(data_dir=Path(tempfile.mkdtemp()), public_url="http://localhost:8080",
                         host="127.0.0.1", port=8080, dev_mode=True)
-    return create_app(settings).state.hub
+    state = create_app(settings).state.hub
+    state.registry.register(Storing())
+    return state
 
 
-def save(hub, slug: str, row=None) -> None:
+def save(hub, slug: str, row=None, plugin_id: str = "storing") -> None:
     from mcphub.web.routes import _save_backend
 
-    _save_backend(hub, slug=slug, plugin_id="mcp-proxy", title="Router", enabled=False,
+    _save_backend(hub, slug=slug, plugin_id=plugin_id, title="Router", enabled=False,
                   config={"url": "http://10.0.0.1/mcp"}, secrets={}, row=row)
 
 
@@ -273,14 +296,16 @@ def test_a_version_that_is_not_a_directory_name_is_refused(version, data_dir):
 
 # ── and what a running backend is actually handed ─────────────────────────
 
-class Recording:
+class Recording(PluginDefaults):
     """A plugin that reports the storage each variant was built with."""
 
     id, name, description, fields = "recording", "Recording", "d", ()
-    review_before_enable = False
 
     def __init__(self) -> None:
         self.built: list[tuple[str, Path | None]] = []
+
+    def uses_storage(self, instance) -> bool:
+        return True
 
     def build(self, instance):
         from mcp.server.mcpserver import MCPServer
@@ -293,12 +318,7 @@ class Recording:
 
         return replace(instance, config={**instance.config, "upstream_version": version})
 
-    def fields_for(self, instance):
-        return ()
-
     async def check(self, instance):  # pragma: no cover
-        from mcphub.plugins.base import CheckResult
-
         return CheckResult(True, "ok")
 
 
@@ -342,3 +362,29 @@ async def test_separated_versions_are_handed_different_ones(hub):
     built = await started(hub, Recording(), per_version=True, versions=("", "0.4.0"))
     assert len({path for _, path in built}) == 2
     assert all(path is not None and path.is_dir() for _, path in built)
+
+
+# ── and who does not get one ──────────────────────────────────────────────
+
+def test_a_proxied_server_is_given_none(hub):
+    """It keeps its data wherever it already keeps it. The hub naming a path it
+    cannot hand across a container boundary is a setting that looks like a
+    feature, on the form of every server anyone ever wraps."""
+    save(hub, "router", plugin_id="mcp-proxy")
+    assert hub.current_instance("router").storage is None
+    assert not storage.path_for(hub.settings.data_dir, "router").exists()
+
+
+def test_a_plugin_that_says_nothing_says_no(hub):
+    from mcphub.plugins.base import PluginDefaults
+
+    assert PluginDefaults.uses_storage(object(), None) is False  # type: ignore[arg-type]
+
+
+async def test_a_backend_whose_plugin_wants_none_is_started_without_one(hub):
+    class Quiet(Recording):
+        def uses_storage(self, instance) -> bool:
+            return False
+
+    built = await started(hub, Quiet(), per_version=False, versions=("",))
+    assert built[0][1] is None

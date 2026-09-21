@@ -28,7 +28,10 @@ same hub.
 
 **Configuration in a browser.** Add a device, rotate a password, disable a
 backend — it takes effect immediately, with no restart and no YAML. Credentials
-are encrypted at rest and never sent back to the browser.
+are encrypted at rest and never sent back to the browser. A backend is
+configured on two pages: **MCP server** for how the hub reaches it, and **App**
+for what it is besides — its web interface, its storage, and what else on this
+hub it may use.
 
 **A backend for the hub itself.** Every hub has `mcphub`, built in and
 reserved: the documentation below about building apps for it, and tools for
@@ -295,10 +298,14 @@ An administrator holds every backend at `admin` without a grant row.
 
 ### Storage
 
-Every backend gets a directory of its own at `$MCPHUB_DATA_DIR/apps/<slug>`,
-for a database or anything else it needs to keep across restarts. It is inside
-the data volume, so it is backed up with everything else, and the path is shown
-on the backend's own settings page.
+A plugin that says it keeps something gets a directory of its own at
+`$MCPHUB_DATA_DIR/apps/<slug>`, inside the data volume, so it is backed up with
+everything else. The path is shown on the backend's **App** settings page.
+
+It is opt-in — a plugin overrides `uses_storage()` — and the default is no. A
+server the hub merely proxies keeps its data wherever it already keeps it, and
+a path the hub names but cannot hand across a container boundary is a setting
+that looks like a feature, on the settings page of every server anyone wraps.
 
 **A server the hub launches** finds the path in `MCPHUB_STORAGE`. Almost no
 server asks for its data directory under that name — it wants `DB_PATH` or
@@ -346,8 +353,8 @@ left to you.
 
 An app often needs another backend on the same hub. Rather than being handed a
 credential by hand — which nobody can then see or revoke in one place — a
-backend can be granted other backends on its own settings page, with a level
-each, using the same picker as for a person.
+backend can be granted other backends on its **App** settings page, with a
+level each, using the same picker as for a person.
 
 It gets an identity to go with it: an ordinary account called `app:<slug>`, with
 no password that can ever verify. That is the whole mechanism. Its grants are

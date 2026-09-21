@@ -213,12 +213,14 @@ async def test_deploying_from_a_url_creates_a_disabled_backend(hub, server):
     assert json.loads(row["config_json"])["url"] == "http://dictionary:8000/mcp"
 
 
-async def test_a_deployed_backend_gets_its_storage(hub, server):
+async def test_a_proxied_backend_is_given_no_storage(hub, server):
+    """A server the hub merely proxies keeps its data wherever it already keeps
+    it, so the hub does not name a path it could not hand over anyway."""
     with signed_in("helper"):
         answer = json.loads(await call(server, "deploy_app", slug="dictionary",
                                        url="http://d:8000/mcp"))
-    assert Path(answer["storage"]) == storage.path_for(hub.settings.data_dir, "dictionary")
-    assert Path(answer["storage"]).is_dir()
+    assert answer["storage"] is None
+    assert not storage.path_for(hub.settings.data_dir, "dictionary").exists()
 
 
 @pytest.mark.parametrize("slug,reason", [
@@ -273,7 +275,6 @@ async def test_describing_names_the_storage_and_the_grants_but_not_the_secrets(h
         described = json.loads(await call(server, "describe_backend", slug="dictionary"))
     assert described["secrets_set"] == ["env_API_TOKEN"]
     assert "s3cret" not in json.dumps(described)
-    assert described["storage"].endswith("/apps/dictionary")
 
 
 async def test_describing_something_not_granted_is_refused(hub, server):
@@ -286,16 +287,14 @@ async def test_describing_something_not_granted_is_refused(hub, server):
 async def test_removing_keeps_the_files(hub, server):
     """Unmounting is reversible and a dropped database is not."""
     with signed_in("helper"):
-        answer = json.loads(await call(server, "deploy_app", slug="dictionary",
-                                       url="http://d/mcp"))
-    kept = Path(answer["storage"])
+        await call(server, "deploy_app", slug="dictionary", url="http://d/mcp")
+    kept = storage.ensure(hub.settings.data_dir, "dictionary")
     (kept / "words.db").write_text("kept")
 
     with signed_in("helper"):
-        said = await call(server, "remove_backend", slug="dictionary")
+        await call(server, "remove_backend", slug="dictionary")
     assert hub.backend_row("dictionary") is None
     assert (kept / "words.db").read_text() == "kept"
-    assert str(kept) in said
 
 
 async def test_removing_something_that_is_not_there_says_so(hub, server):
