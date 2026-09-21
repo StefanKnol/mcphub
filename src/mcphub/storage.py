@@ -33,27 +33,49 @@ ENV_VAR = "MCPHUB_STORAGE"
 
 DIRNAME = "apps"
 
+PER_VERSION = "storage_per_version"
+"""Config key asking for a directory per version rather than one shared.
+
+Off by default. The case that brought storage about is several accounts working
+on the same data while sitting on different versions of the server that serves
+it — a dictionary two people are editing while one of them tries a new release.
+Sharing is what makes that work, so sharing is the default.
+
+Turn it on for a backend whose versions keep something they cannot share, such
+as a derived index whose format changed. It does not make two versions safe to
+run against one dataset: they would still share any schema migration either of
+them applies, and nothing here can undo that."""
+
 _SAFE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+_SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,62}$")
 _REFERENCE = re.compile(r"\$\{" + ENV_VAR + r"\}|\$" + ENV_VAR + r"(?![A-Za-z0-9_])")
 
 
-def path_for(data_dir: Path, slug: str) -> Path:
-    """Where this backend's own files live. Does not create anything."""
+def path_for(data_dir: Path, slug: str, version: str = "") -> Path:
+    """Where this backend's own files live. Does not create anything.
+
+    One directory per backend, shared by every version of it and every account
+    using it — which is the point when the data is the thing people are working
+    on together. `version` asks for a directory of its own instead, for a
+    backend whose versions keep something they cannot share.
+    """
     if not _SAFE.match(slug):
         # Slugs are already narrower than this, but the path is built from one,
         # and a rule that only holds somewhere else is not a rule.
         raise ValueError(f"{slug!r} cannot name a directory")
-    return Path(data_dir) / DIRNAME / slug
+    if version and not _SAFE_VERSION.match(version):
+        raise ValueError(f"{version!r} cannot name a directory")
+    return Path(data_dir) / DIRNAME / (f"{slug}@{version}" if version else slug)
 
 
-def ensure(data_dir: Path, slug: str) -> Path | None:
+def ensure(data_dir: Path, slug: str, version: str = "") -> Path | None:
     """The directory, created if it was not there. None if it could not be.
 
     A hub whose volume is read-only should still serve every backend that does
     not need storage, so this reports failure rather than raising.
     """
     try:
-        path = path_for(data_dir, slug)
+        path = path_for(data_dir, slug, version)
     except ValueError:
         log.warning("no storage for backend %r: its name cannot be a directory", slug)
         return None

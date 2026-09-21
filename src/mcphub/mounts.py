@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
@@ -104,10 +104,14 @@ class MountManager:
     async def _start_variant(self, plugin: Plugin, instance: BackendInstance,
                              version: str) -> Variant:
         """Build and start one version's server. Same lifespan dance as a mount."""
-        # Created here rather than at save time alone, so a backend restored
-        # from a backed-up database finds its directory on first start.
-        storage.ensure(self._settings.data_dir, instance.slug)
         shaped = plugin.variant(instance, version) if version else instance
+        # Created here rather than at save time alone, so a backend restored
+        # from a backed-up database finds its directory on first start — and
+        # assigned by the hub rather than left to the plugin, so which versions
+        # share a directory is one decision in one place.
+        shaped = replace(shaped, storage=storage.ensure(
+            self._settings.data_dir, instance.slug,
+            version if instance.config.get(storage.PER_VERSION) else ""))
         server = plugin.build(shaped)
         # Innermost, so it sees what the backend really answered rather than
         # anything a plugin's own middleware went on to add.

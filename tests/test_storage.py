@@ -193,3 +193,152 @@ def test_deleting_a_backend_leaves_its_files_alone(hub):
     _revoke_backend_credentials(hub, "router")
     hub.db.execute("DELETE FROM backends WHERE slug = 'router'")
     assert (kept / "app.db").read_text() == "kept"
+
+
+# ── shared between versions and between accounts ──────────────────────────
+
+def variant_storage(hub, slug: str, version: str):
+    """The directory a mounted variant is actually given."""
+    instance = hub.current_instance(slug)
+    per_version = bool(instance.config.get(storage.PER_VERSION))
+    return storage.ensure(hub.settings.data_dir, slug, version if per_version else "")
+
+
+def test_two_versions_of_one_backend_share_a_directory(hub):
+    """Which is the point. Someone trying a new release of the server should
+    still be working on the same dictionary as the colleague on the old one —
+    the data is the thing they share, and the version is not."""
+    save(hub, "aenvae")
+    stable = variant_storage(hub, "aenvae", "")
+    testing = variant_storage(hub, "aenvae", "0.4.0")
+    assert stable == testing
+
+    (stable / "words.db").write_text("one dictionary")
+    assert (testing / "words.db").read_text() == "one dictionary"
+
+
+def test_every_account_shares_it_too(hub):
+    """Backends are shared, so their storage is. A per-account directory would
+    give two people editing one dictionary two dictionaries."""
+    save(hub, "aenvae")
+    assert hub.current_instance("aenvae").storage == storage.path_for(
+        hub.settings.data_dir, "aenvae"), "nothing about the path depends on who is asking"
+
+
+def test_a_pinned_version_does_not_lose_its_storage(hub):
+    """`variant()` builds a new instance for a pinned version. Listing its
+    fields by hand dropped the storage path, so a pinned account got a server
+    with nowhere to write — and only a pinned one, which is the hardest kind of
+    difference to notice."""
+    from dataclasses import fields
+
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN
+    from mcphub.plugins.base import BackendInstance
+
+    original = BackendInstance(
+        slug="aenvae", title="Aenvae", plugin_id="mcp-proxy",
+        config={"command": "uvx aenvae",
+                "registry_package": {"registryType": "pypi", "identifier": "aenvae",
+                                     "runtime": "uvx", "args": []}},
+        storage=Path("/data/apps/aenvae"))
+    pinned = PLUGIN.variant(original, "0.4.0")
+
+    assert pinned.config["command"] == "uvx aenvae==0.4.0", "it must still pin the version"
+    carried = {f.name for f in fields(BackendInstance)} - {"config"}
+    for name in carried:
+        assert getattr(pinned, name) == getattr(original, name), (
+            f"a variant dropped {name!r}; build it with dataclasses.replace so a "
+            f"field added later is carried too"
+        )
+
+
+def test_versions_can_be_separated_when_they_cannot_share(hub):
+    """A derived index whose format changed, say — not the common case, but a
+    real one, and sharing a directory would corrupt it."""
+    save(hub, "indexer")
+    hub.db.execute("UPDATE backends SET config_json = ? WHERE slug = 'indexer'",
+                   ('{"' + storage.PER_VERSION + '": true}',))
+    default = variant_storage(hub, "indexer", "")
+    pinned = variant_storage(hub, "indexer", "0.4.0")
+    assert default != pinned
+    assert pinned.name == "indexer@0.4.0"
+
+
+@pytest.mark.parametrize("version", ["../etc", "a/b", "$(x)", "a" * 70])
+def test_a_version_that_is_not_a_directory_name_is_refused(version, data_dir):
+    with pytest.raises(ValueError):
+        storage.path_for(data_dir, "router", version)
+    assert storage.ensure(data_dir, "router", version) is None
+
+
+# ── and what a running backend is actually handed ─────────────────────────
+
+class Recording:
+    """A plugin that reports the storage each variant was built with."""
+
+    id, name, description, fields = "recording", "Recording", "d", ()
+    review_before_enable = False
+
+    def __init__(self) -> None:
+        self.built: list[tuple[str, Path | None]] = []
+
+    def build(self, instance):
+        from mcp.server.mcpserver import MCPServer
+
+        self.built.append((instance.config.get("upstream_version", ""), instance.storage))
+        return MCPServer(instance.title)
+
+    def variant(self, instance, version):
+        from dataclasses import replace
+
+        return replace(instance, config={**instance.config, "upstream_version": version})
+
+    def fields_for(self, instance):
+        return ()
+
+    async def check(self, instance):  # pragma: no cover
+        from mcphub.plugins.base import CheckResult
+
+        return CheckResult(True, "ok")
+
+
+async def started(hub, plugin, *, per_version: bool, versions: tuple[str, ...]):
+    from mcphub.auth.provider import HubOAuthProvider
+    from mcphub.mounts import MountManager
+    from mcphub.plugins.base import BackendInstance
+
+    # Built directly: `hub.mounts` only exists once the app's lifespan has run,
+    # and what is under test is one method of it.
+    mounts = MountManager(app=None, provider=HubOAuthProvider(hub.db),
+                          settings=hub.settings, db=hub.db)
+    instance = BackendInstance(
+        slug="aenvae", title="Aenvae", plugin_id="recording",
+        config={storage.PER_VERSION: True} if per_version else {})
+    for version in versions:
+        variant = await mounts._start_variant(plugin, instance, version)
+        variant.stop.set()
+    return plugin.built
+
+
+async def test_a_running_backend_is_handed_a_directory_that_exists(hub):
+    built = await started(hub, Recording(), per_version=False, versions=("",))
+    _, path = built[0]
+    assert path is not None and path.is_dir()
+
+
+async def test_both_running_versions_are_handed_the_same_directory(hub):
+    """The end of the chain: two servers running at once, one directory.
+
+    This is what the dictionary case needs, and the only place it is decided —
+    so it is checked against real started variants rather than the helper that
+    computes the path.
+    """
+    built = await started(hub, Recording(), per_version=False, versions=("", "0.4.0"))
+    assert {version for version, _ in built} == {"", "0.4.0"}
+    assert len({path for _, path in built}) == 1
+
+
+async def test_separated_versions_are_handed_different_ones(hub):
+    built = await started(hub, Recording(), per_version=True, versions=("", "0.4.0"))
+    assert len({path for _, path in built}) == 2
+    assert all(path is not None and path.is_dir() for _, path in built)

@@ -319,6 +319,20 @@ A storage API that apps called back into would cross that boundary, but only
 for an app written against it. A directory works for anything that can be told
 where to put its files, which is nearly everything.
 
+#### One directory, shared
+
+Every version of a backend and every account using it share the one directory.
+That is deliberate: a dictionary two people are editing while one of them tries
+a newer release of the server is the case storage exists for, and a directory
+per version or per account would hand them two dictionaries instead of one.
+
+It is not free. Two versions against one dataset also share any schema
+migration either applies, and the hub cannot undo that — if a new version
+migrates, the old one is running against migrated data. Where versions keep
+something they genuinely cannot share (a derived index whose format changed),
+tick **Give each version its own storage** and each gets `apps/<slug>@<version>`.
+That separates the files; it does not make a shared dataset safe.
+
 Renaming a backend moves its directory with it. Deleting one does **not** delete
 its files — unmounting is reversible and a dropped database is not, so that is
 left to you.

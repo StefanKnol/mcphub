@@ -260,6 +260,18 @@ class McpProxyPlugin(PluginDefaults):
         ),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),
         ConfigField(
+            storage.PER_VERSION, "Give each version its own storage", type="bool", default=False,
+            help=(
+                "Off by default: every version of this backend, and every account using it, "
+                "shares one storage directory — which is what you want when the data is the "
+                "thing people are working on together, and someone is trying a new version "
+                "of the server that serves it. Turn it on for a backend whose versions keep "
+                "something they cannot share, such as an index whose format changed. "
+                "Note what this does not fix: two versions sharing a directory also share "
+                "any schema migration one of them applies, and the hub cannot undo that."
+            ),
+        ),
+        ConfigField(
             ALLOW_KEY, "Tools to expose", type="multiselect", required=False,
             help=(
                 "Selecting none exposes everything the upstream offers, which for a large "
@@ -474,7 +486,8 @@ class McpProxyPlugin(PluginDefaults):
                         instance.slug, version)
             return instance
 
-        from ...base import BackendInstance as _Instance
+        from dataclasses import replace
+
         from ....registry import PackageRef
 
         ref = PackageRef(
@@ -495,8 +508,9 @@ class McpProxyPlugin(PluginDefaults):
             NAME_KEY: catalog.get("name") or instance.config.get(NAME_KEY, ""),
             VERSION_KEY: version,
         }
-        return _Instance(slug=instance.slug, title=instance.title, plugin_id=instance.plugin_id,
-                         config=config, secrets=instance.secrets)
+        # `replace`, not a fresh instance: listing the fields by hand drops
+        # any that were added since, silently and only at a pinned version.
+        return replace(instance, config=config)
 
     def tool_names(self, instance: BackendInstance) -> set[str]:
         """What this backend currently believes the upstream offers."""
