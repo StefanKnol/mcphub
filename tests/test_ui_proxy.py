@@ -15,6 +15,7 @@ import pytest
 
 from mcphub.web.uiproxy import (
     SANDBOX,
+    _rewrite_root_absolute,
     STRIP_REQUEST,
     STRIP_RESPONSE,
     _inject_base,
@@ -89,3 +90,55 @@ def test_an_existing_base_is_respected():
 
 def test_injection_is_case_insensitive():
     assert b"<base" in _inject_base(b"<HTML><HEAD></HEAD>", "/ui/x/")
+
+
+def test_nosniff_is_not_added_to_proxied_responses():
+    """The page is in an opaque origin, so every asset is a cross-origin
+    request. `nosniff` then lets Cross-Origin Read Blocking refuse anything
+    whose declared type does not match its use — which turns a merely
+    mislabelled stylesheet into a hard block, for content whose types we do
+    not control."""
+    import inspect
+
+    from mcphub.web import uiproxy
+
+    source = inspect.getsource(uiproxy.forward)
+    assert "nosniff" not in source.replace("# ", "").split("Deliberately")[0]
+
+
+def test_the_upstreams_content_type_is_forwarded():
+    """CORB decides by declared type, so the upstream's own must survive."""
+    assert "content-type" not in STRIP_RESPONSE
+
+
+# ── root-absolute references ──────────────────────────────────────────────
+# A <base> only affects *relative* references. A root-absolute one leaves the
+# mount, lands on the hub's own 404, and comes back as HTML — which the browser
+# then refuses with Cross-Origin Read Blocking, naming the stylesheet rather
+# than the cause. This is the fix for that, and it is the likelier of the two
+# reasons a proxied interface loses its styling.
+
+@pytest.mark.parametrize("markup,expected", [
+    (b'<link href="/styles.css">', b'<link href="/ui/a/styles.css">'),
+    (b"<script src='/js/app.js'>", b"<script src='/ui/a/js/app.js'>"),
+    (b"<img src=/logo.png>", b"<img src=/ui/a/logo.png>"),
+    (b'<form action="/search">', b'<form action="/ui/a/search">'),
+])
+def test_root_absolute_references_are_moved_under_the_mount(markup, expected):
+    assert _rewrite_root_absolute(markup, "/ui/a/") == expected
+
+
+@pytest.mark.parametrize("markup", [
+    b'<script src="//cdn.example.com/x.js">',   # protocol-relative: another origin
+    b'<a href="https://elsewhere.example/x">',  # absolute: not ours
+    b'<a href="relative.html">',                # the <base> handles this
+    b'<a href="./also-relative">',
+])
+def test_other_references_are_left_alone(markup):
+    assert _rewrite_root_absolute(markup, "/ui/a/") == markup
+
+
+def test_rewriting_does_not_touch_arbitrary_slashes():
+    """Only URL-bearing attributes, so prose and data survive."""
+    body = b'<p>use /etc/hosts</p><div data-note="/not/a/url">'
+    assert _rewrite_root_absolute(body, "/ui/a/") == body

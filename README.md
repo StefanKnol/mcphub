@@ -217,9 +217,21 @@ The cost is symmetrical: an opaque origin has no cookies, so an interface with
 its own login cannot authenticate through here. For one with no login — the
 case this exists for — that costs nothing.
 
-Not handled: WebSockets, and root-absolute asset paths (`/static/app.js`). A
-`<base>` is injected so relative paths work; an interface that writes
-root-absolute URLs needs to honour the `X-Forwarded-Prefix` header it is sent.
+Asset paths are handled two ways: a `<base>` is injected so relative references
+resolve under the mount, and root-absolute ones in markup (`href="/styles.css"`,
+`url(/img.png)` in CSS) are rewritten to point at it. URLs a script builds at
+runtime are beyond both — for those the interface needs to honour the
+`X-Forwarded-Prefix` header it is sent.
+
+If an asset comes back blocked by **CORB (Cross-Origin Read Blocking)**, the
+cause is almost always that the request did not reach the upstream and the
+hub's own 404 page answered instead: the browser refuses HTML used as a
+stylesheet and names the stylesheet, not the path. Check what the request
+actually returned before suspecting the sandbox. Note also that `nosniff` is
+deliberately *not* added to proxied responses — adding it to content whose
+types we do not control turns a merely mislabelled asset into a hard block.
+
+WebSockets are not proxied.
 
 ### Accounts
 

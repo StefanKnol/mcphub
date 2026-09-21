@@ -56,19 +56,40 @@ STRIP_RESPONSE = HOP_BY_HOP | {
 
 BASE_TAG = re.compile(rb"<head[^>]*>", re.IGNORECASE)
 
+# Root-absolute references in markup: src="/x", href='/x', action=/x. Not
+# protocol-relative (`//host/x`), which is a different origin and not ours to
+# rewrite.
+ROOT_ABSOLUTE = re.compile(
+    rb"""(\s(?:src|href|action|poster|data-src)\s*=\s*)(["']?)/(?!/)""",
+    re.IGNORECASE,
+)
+
 
 def is_proxyable(url: str) -> bool:
     parsed = urlparse(url)
     return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
+def _rewrite_root_absolute(body: bytes, prefix: str) -> bytes:
+    """Point `/styles.css` at `/ui/{slug}/styles.css`.
+
+    A `<base>` cannot do this: it only affects *relative* references. A
+    root-absolute one leaves the mount entirely, lands on the hub's own 404,
+    and comes back as HTML — which the browser then refuses with Cross-Origin
+    Read Blocking, naming the stylesheet rather than the cause. So the markup
+    is rewritten.
+
+    Only attributes in markup. URLs a script builds at runtime are beyond this,
+    and need the upstream to honour the `X-Forwarded-Prefix` it is sent.
+    """
+    return ROOT_ABSOLUTE.sub(rb"\1\2" + prefix.rstrip("/").encode() + b"/", body)
+
+
 def _inject_base(body: bytes, prefix: str) -> bytes:
     """Point relative URLs at the mount, by adding a <base> to the document.
 
-    A UI written to live at the root asks for `style.css`, which under a mount
-    would resolve against `/ui/`, not `/ui/{slug}/`. A `<base>` fixes every
-    relative reference at once. Root-absolute references (`/static/app.js`) are
-    beyond it — those need the upstream to know it is behind a prefix.
+    A UI written to live at the root asks for `styles.css`, which under a mount
+    would resolve against `/ui/`, not `/ui/{slug}/`.
     """
     if b"<base" in body[:4096].lower():
         return body
@@ -111,8 +132,20 @@ async def forward(request: Request, upstream_base: str, prefix: str) -> Response
     out = {k: v for k, v in upstream.headers.items() if k.lower() not in STRIP_RESPONSE}
     content = upstream.content
 
-    if "text/html" in upstream.headers.get("content-type", ""):
+    content_type = upstream.headers.get("content-type", "")
+    if "text/html" in content_type:
+        content = _rewrite_root_absolute(content, prefix)
         content = _inject_base(content, prefix)
+    elif "text/css" in content_type:
+        # url(/x) inside a stylesheet has the same problem as src="/x".
+        content = re.sub(rb"""(url\(\s*["']?)/(?!/)""",
+                         rb"\1" + prefix.rstrip("/").encode() + b"/", content)
+    elif path and "." in path.rsplit("/", 1)[-1]:
+        # An asset request answered with a document almost always means the
+        # upstream did not recognise the path — CORB will refuse it, and the
+        # error names the asset rather than the cause, so say so here.
+        log.info("ui proxy: %s returned %r for %s; if that is an asset, the path "
+                 "is not reaching the upstream", upstream_base, content_type or "no type", path)
 
     location = upstream.headers.get("location")
     if location:
@@ -123,7 +156,18 @@ async def forward(request: Request, upstream_base: str, prefix: str) -> Response
             out["location"] = prefix.rstrip("/") + location
 
     out["content-security-policy"] = SANDBOX
-    out["x-content-type-options"] = "nosniff"
+    # Deliberately *not* adding `nosniff`. The sandbox puts this page in an
+    # opaque origin, so every asset it asks for is a cross-origin request, and
+    # Cross-Origin Read Blocking then refuses any response whose declared type
+    # does not match how it is being used. Adding `nosniff` to content whose
+    # types we do not control turns a merely mislabelled stylesheet into a hard
+    # CORB block. The upstream's own type is forwarded untouched and the browser
+    # decides.
+    #
+    # CORB will still refuse an HTML response used as a stylesheet or a script,
+    # which is the case worth knowing about: an app that answers unknown paths
+    # with its index page produces exactly that, and it means the asset path is
+    # wrong rather than the type.
     # This page is not the hub, and nothing it does should be cached as if it were.
     out.setdefault("cache-control", "no-store")
 
