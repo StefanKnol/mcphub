@@ -109,6 +109,26 @@ class Hub:
             return f"{type(exc).__name__}: {exc}"
         return None
 
+    DOCS_SLUG = "docs"
+
+    def bootstrap_docs(self) -> None:
+        """Add the hub's own documentation as a backend, on first run only.
+
+        Tied to the same first run that creates the admin account rather than
+        to "no backends exist", so deleting it means deleting it — it does not
+        come back the next time the hub starts with an empty list.
+        """
+        if self.registry.get("mcphub-docs") is None:
+            return
+        if self.db.one("SELECT id FROM backends WHERE slug = ?", (self.DOCS_SLUG,)):
+            return
+        self.db.execute(
+            "INSERT INTO backends (slug, plugin_id, title, enabled, config_json, "
+            "created_at, updated_at) VALUES (?, 'mcphub-docs', ?, 1, '{}', ?, ?)",
+            (self.DOCS_SLUG, "mcphub documentation", utcnow(), utcnow()),
+        )
+        log.info("added the documentation backend at /mcp/%s", self.DOCS_SLUG)
+
     def bootstrap_admin(self) -> str | None:
         """Create the first account, returning its generated password once."""
         if self.db.one("SELECT id FROM users LIMIT 1"):
@@ -130,6 +150,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
     async def lifespan(app: Starlette):
         password = hub.bootstrap_admin()
         if password:
+            hub.bootstrap_docs()
             log.warning(
                 "\n%s\nFirst run: created the 'admin' account.\n"
                 "  username: admin\n  password: %s\n"

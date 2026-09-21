@@ -30,6 +30,11 @@ same hub.
 backend — it takes effect immediately, with no restart and no YAML. Credentials
 are encrypted at rest and never sent back to the browser.
 
+**Its own documentation, over MCP.** A new hub comes with a `docs` backend
+carrying everything below about building and deploying apps for it. Connect it
+and whatever you are writing with can read the page on tool annotations while
+it is writing tools, instead of being told about it afterwards.
+
 ## Running it
 
 ```bash
@@ -494,6 +499,25 @@ re-runs the checks weekly and opens a pull request when what it observes
 changes; a server that quietly stops launching turns the build red rather than
 keeping its badge. The script self-tests its own harness first, so "everything
 failed" is distinguishable from "the harness is broken".
+
+## Documentation, served
+
+A new hub creates one backend for itself: **mcphub documentation**, at
+`/mcp/docs`. It carries eight pages about building for the hub — annotations,
+levels, web interfaces, storage, plugins, publishing, deploying — as MCP tools
+(`list_topics`, `read_topic`, `search_docs`) and as one resource per page, so a
+client can attach a page directly.
+
+Every tool on it is read-only, so it works at every level including `viewer`.
+
+The pages ship with the hub rather than being fetched, so they describe the
+build you are running. They live in `src/mcphub/data/docs/`; adding a file there
+adds a page, with no list to update. `tests/test_docs.py` checks the pages
+against the code beside them — that the storage page names the variable the hub
+actually sets, that the levels page lists the levels that exist — so a rename
+that makes the documentation wrong fails the build rather than sitting there.
+
+It arrives with the first run, not every run. Delete it and it stays deleted.
 
 ## Writing a plugin
 
