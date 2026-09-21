@@ -36,6 +36,12 @@ class Settings:
     host: str
     port: int
     dev_mode: bool
+    cimd_enabled: bool = True
+    """Accept a client_id that is an HTTPS URL describing the client, instead of
+    requiring registration. Turning it off means the hub never makes an outbound
+    request to a URL an unauthenticated caller supplied, at the cost of only
+    working with clients that register."""
+
     update_interval: int = 3600
     """Seconds between registry update checks. 0 disables the background check
     entirely; the floor is enforced in UpdateChecker so a small value cannot
@@ -108,5 +114,6 @@ class Settings:
             host=os.environ.get("MCPHUB_HOST", "0.0.0.0"),
             port=int(os.environ.get("MCPHUB_PORT", "8080")),
             dev_mode=dev_mode,
+            cimd_enabled=os.environ.get("MCPHUB_CIMD", "1").lower() not in {"0", "false", "no"},
             update_interval=int(os.environ.get("MCPHUB_UPDATE_INTERVAL", "3600")),
         )

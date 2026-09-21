@@ -7,8 +7,10 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
-from mcp.server.auth.routes import create_auth_routes
+from mcp.server.auth.routes import build_metadata, create_auth_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
+from mcp.server.auth.handlers.metadata import MetadataHandler
+from mcp.server.auth.routes import cors_middleware
 from pydantic import AnyHttpUrl, ConfigDict, TypeAdapter
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
@@ -16,6 +18,7 @@ from starlette.routing import Route
 
 from .auth.provider import ALL_SCOPES, HubOAuthProvider
 from .config import Settings
+from .auth.cimd import ClientMetadataResolver
 from .crypto import SecretBox, hash_password, load_or_create_key
 from .db import Database, utcnow
 from .mounts import MountManager
@@ -46,7 +49,8 @@ class Hub:
         self.secrets = SecretBox(load_or_create_key(settings.key_path))
         self.registry = PluginRegistry()
         self.registry.load_entry_points()
-        self.provider = HubOAuthProvider(self.db)
+        self.client_metadata = ClientMetadataResolver(enabled=settings.cimd_enabled)
+        self.provider = HubOAuthProvider(self.db, client_metadata=self.client_metadata)
         self.mounts: MountManager | None = None  # set once the app exists
         self.updates = UpdateChecker(self, settings.update_interval)
 
@@ -158,6 +162,21 @@ def create_app(settings: Settings | None = None) -> Starlette:
             revocation_options=RevocationOptions(enabled=True),
         )
     )
+    if settings.cimd_enabled:
+        # The SDK builds this metadata inside create_auth_routes and has no way
+        # to add the flag, so the document is rebuilt and its route replaced.
+        # Without the flag a client has no way to know it may present a URL,
+        # and falls back to registering.
+        registration = ClientRegistrationOptions(
+            enabled=True, valid_scopes=ALL_SCOPES, default_scopes=ALL_SCOPES)
+        metadata = build_metadata(issuer, None, registration, RevocationOptions(enabled=True))
+        metadata.client_id_metadata_document_supported = True
+        routes[0] = Route(
+            "/.well-known/oauth-authorization-server",
+            endpoint=cors_middleware(MetadataHandler(metadata).handle, ["GET", "OPTIONS"]),
+            methods=["GET", "OPTIONS"],
+        )
+
     routes += web_routes.build(hub)
     routes.append(Route("/healthz", lambda r: JSONResponse({"ok": True})))
     # Catch-all last; MountManager inserts backend mounts directly above it.

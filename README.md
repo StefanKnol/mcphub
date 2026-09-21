@@ -17,9 +17,12 @@ merged into a single endpoint — the MikroTik plugin alone exposes 24 tools and
 the server this replaces exposed 182, so merging burns context before you ask
 anything and measurably degrades tool selection.
 
-**Real OAuth.** A full OAuth 2.1 authorization server with dynamic client
-registration (RFC 7591), PKCE, refresh-token rotation, and protected resource
-metadata (RFC 9728). Each backend is a distinct RFC 8707 *resource*, so a token
+**Real OAuth.** A full OAuth 2.1 authorization server with PKCE,
+refresh-token rotation, and protected resource metadata (RFC 9728). Clients may
+either register dynamically (RFC 7591) or present a **client ID metadata
+document** — an HTTPS URL describing the client, which the hub fetches instead
+of requiring registration. Claude uses the latter, so there is nothing to set
+up on either side. Each backend is a distinct RFC 8707 *resource*, so a token
 issued for your router is rejected if replayed against another backend on the
 same hub.
 
@@ -158,6 +161,35 @@ so if an upstream released something and you cannot see it, that button is why.
 Tools the upstream no longer has are dropped from the allowlist at the same
 time, rather than lingering and quietly reappearing if it ever brings them back.
 
+### Client ID metadata documents
+
+A client may present an HTTPS URL as its `client_id` rather than registering.
+The hub fetches that URL, reads the client metadata from it, and proceeds —
+which is how a client connects to a server it has never met.
+
+The security shape is the inverse of registration, and worth being explicit
+about: an **unauthenticated** caller hands the hub a URL and the hub makes an
+outbound request to it. That is a request-forgery primitive unless it is
+fenced, so:
+
+- HTTPS only, and the URL must have a path — a bare origin is refused.
+- Every resolved address must be public unicast. Private, loopback and
+  link-local addresses are refused, because this hub usually sits on a LAN with
+  a router on it and a `client_id` must not become a way to reach it.
+- Redirects are not followed at all, since a public URL redirecting to a
+  private one is the ordinary way past an address check.
+- The body is capped at 64 KB, the timeout is short, and both successes and
+  failures are cached so a `client_id` is at most one request per interval.
+- A document claiming a different `client_id` than the URL it came from is
+  refused, and a `client_secret` in a document is discarded — a document cannot
+  confer a secret on itself, so these are public clients and PKCE carries the
+  weight.
+- A URL-shaped `client_id` cannot be registered over, or whoever registered
+  first would own that identity.
+
+Set `MCPHUB_CIMD=0` to turn it off, at the cost of only working with clients
+that register.
+
 ### Accounts
 
 The first run creates one administrator. Further accounts are added under
@@ -188,6 +220,7 @@ Only these are environment variables. Everything else lives in the database.
 | `MCPHUB_PUBLIC_URL` | `http://localhost:8080` | Externally reachable origin. Must be HTTPS in production. |
 | `MCPHUB_DATA_DIR` | `/data` | Holds `hub.db` and `master.key`. |
 | `MCPHUB_HOST` / `MCPHUB_PORT` | `0.0.0.0` / `8080` | Bind address. |
+| `MCPHUB_CIMD` | `1` | Accept a `client_id` that is an HTTPS URL describing the client. Set `0` to require registration instead. |
 | `MCPHUB_UPDATE_INTERVAL` | `3600` | Seconds between registry update checks. `0` disables them. |
 | `MCPHUB_ALLOWED_HOSTS` | derived | Extra Host header values to accept, comma-separated. Only needed when the hub answers on a name other than `MCPHUB_PUBLIC_URL`. |
 | `MCPHUB_DEV` | unset | Starlette debug output. Does not relax the HTTPS requirement — OAuth needs an HTTPS issuer, so only `localhost` and `127.0.0.1` may use http. |

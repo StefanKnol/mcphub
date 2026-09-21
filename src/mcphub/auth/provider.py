@@ -25,12 +25,14 @@ from mcp.server.auth.provider import (
     AuthorizeError,
     OAuthAuthorizationServerProvider,
     RefreshToken,
+    RegistrationError,
     TokenError,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
 
 from ..crypto import hash_token, new_token, verify_password
+from .cimd import ClientMetadataResolver, is_cimd_client_id
 from ..db import Database, utcnow
 
 log = logging.getLogger(__name__)
@@ -56,9 +58,12 @@ class PendingAuthorization:
 
 
 class HubOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]):
-    def __init__(self, db: Database, login_path: str = "/login") -> None:
+    def __init__(self, db: Database, login_path: str = "/login",
+                 client_metadata: ClientMetadataResolver | None = None) -> None:
         self._db = db
         self._login_path = login_path
+        # Clients that present a metadata document URL instead of registering.
+        self._client_metadata = client_metadata or ClientMetadataResolver()
         # Pending authorizations are deliberately in-memory: they live for
         # minutes, and losing them on restart costs the user one click on the
         # login button rather than a corrupted persistent state to reason about.
@@ -68,11 +73,24 @@ class HubOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refre
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         row = self._db.one("SELECT metadata_json FROM oauth_clients WHERE client_id = ?", (client_id,))
-        if row is None:
-            return None
-        return OAuthClientInformationFull.model_validate_json(row["metadata_json"])
+        if row is not None:
+            return OAuthClientInformationFull.model_validate_json(row["metadata_json"])
+
+        # Not registered here. It may instead be a URL describing itself, which
+        # is how a client connects to a server it has never registered with.
+        # Resolved on demand and never stored: the document is the record, and
+        # caching it as a registration would let a stale copy outlive an edit.
+        return await self._client_metadata.resolve(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        if is_cimd_client_id(client_info.client_id):
+            # Registering a URL-shaped id would shadow the document it names,
+            # and whoever registered first would own that identity.
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="A URL client_id is resolved from its metadata document "
+                                  "and cannot also be registered.",
+            )
         self._db.execute(
             "INSERT OR REPLACE INTO oauth_clients (client_id, secret_hash, metadata_json, created_at) "
             "VALUES (?, ?, ?, ?)",
