@@ -221,7 +221,8 @@ def install(server: Any, hub: Any) -> None:
 
         _save_backend(hub, slug=slug, plugin_id=plugin.id, title=instance.title,
                       enabled=False, config=config, secrets=secrets)
-        tools = sorted(plugin.tool_names(instance))
+        saved = hub.instance_from_row(hub.backend_row(slug))
+        tools = sorted(plugin.tool_names(saved))
         log.info("backend %s deployed over MCP", slug)
         return json.dumps({
             "slug": slug,
@@ -229,8 +230,16 @@ def install(server: Any, hub: Any) -> None:
             "enabled": False,
             "storage": str(instance.storage),
             "tools_found": tools,
-            "next": f"Review the tools, then set_backend_enabled({slug!r}, true). "
-                    f"Its endpoint will be {hub.settings.public_url}/mcp/{slug}.",
+            # An empty list means two very different things, and saying which
+            # is the difference between "this server has nothing" and "nobody
+            # has looked yet". The second is normal when the app is not running.
+            "note": (f"The server could not be reached, so its tools are not known yet. "
+                     f"That is expected if it is not running; start it and open "
+                     f"{hub.settings.public_url}/backends/{slug} to read them."
+                     if not tools else
+                     f"Review these {len(tools)} tools before exposing them."),
+            "next": f"set_backend_enabled({slug!r}, true) puts it at "
+                    f"{hub.settings.public_url}/mcp/{slug}.",
         }, indent=2)
 
     @server.tool(annotations=WRITES)

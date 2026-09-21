@@ -383,3 +383,14 @@ async def test_an_app_granted_this_backend_can_read_but_not_configure(hub, serve
     assert SLUG in listed, "it was granted this backend, so it reads this backend"
     assert "router" not in listed, "and nothing it was not granted"
     assert "may not configure backends" in str(raised.value)
+
+
+async def test_an_unreachable_server_is_said_to_be_unreachable(hub, server):
+    """An empty tool list means two very different things — "this server has
+    nothing" and "nobody has looked yet" — and the second is normal when the
+    app being deployed is not running yet."""
+    with signed_in("helper"):
+        answer = json.loads(await call(server, "deploy_app", slug="dictionary",
+                                       url="http://nothing-here:9/mcp"))
+    assert answer["tools_found"] == []
+    assert "could not be reached" in answer["note"]
