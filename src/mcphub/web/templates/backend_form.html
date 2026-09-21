@@ -27,7 +27,7 @@
     </div>
     <div class="field">
       <label for="slug">URL name</label>
-      <input id="slug" type="text" name="slug" value="{{ slug }}" pattern="[a-z0-9][a-z0-9-]{0,38}[a-z0-9]" required>
+      <input id="slug" type="text" name="slug" value="{{ slug }}" pattern="[a-z0-9][a-z0-9\-]{0,38}[a-z0-9]" required>
       <p class="help">The endpoint becomes <code>{{ public_url }}/mcp/<em>this</em></code>.
         Changing it breaks connectors already pointed at the old address.</p>
     </div>
@@ -114,12 +114,17 @@ document.querySelectorAll("button.test-typed").forEach(function (btn) {
   });
 });
 
-document.querySelectorAll(".picker").forEach(function (picker) {
+// Only a picker that belongs to a multiselect field: a plain one has no
+// toolbar, no counter and nothing to filter. Without this guard the first such
+// picker on the page threw, and everything after it in this script — including
+// the version selector — never ran.
+document.querySelectorAll(".picker[data-group]").forEach(function (picker) {
   var group = picker.dataset.group;
   var boxes = picker.querySelectorAll("input[type=checkbox]");
   var count = document.getElementById("count-" + group);
 
   function refresh() {
+    if (!count) return;
     var n = picker.querySelectorAll("input[type=checkbox]:checked").length;
     count.textContent = n === 0
       ? "none selected \u2014 all " + boxes.length + " will be exposed"

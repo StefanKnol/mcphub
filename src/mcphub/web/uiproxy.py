@@ -19,9 +19,14 @@ trade, and it is the right way round for the case this exists to serve.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import re
+from typing import Any
 from urllib.parse import urljoin, urlparse
+
+import anyio
 
 import httpx2
 from starlette.requests import Request
@@ -56,6 +61,72 @@ STRIP_RESPONSE = HOP_BY_HOP | {
 
 BASE_TAG = re.compile(rb"<head[^>]*>", re.IGNORECASE)
 
+SHIM = """
+(function () {
+  var P = %s;
+  function fix(u) {
+    if (typeof u !== "string" || !u) return u;
+    var parsed;
+    // The mount, not document.baseURI: this script runs while the document is
+    // still being parsed, so the <base> may not be in it yet.
+    try { parsed = new URL(u, location.origin + P + "/"); } catch (e) { return u; }
+    var ws = parsed.protocol === "ws:" || parsed.protocol === "wss:";
+    if (!(parsed.origin === location.origin || (ws && parsed.host === location.host))) return u;
+    if (parsed.pathname === P || parsed.pathname.indexOf(P + "/") === 0) return u;
+    parsed.pathname = P + parsed.pathname;
+    return parsed.toString();
+  }
+  var fetched = window.fetch;
+  if (fetched) window.fetch = function (input, init) {
+    try {
+      if (typeof input === "string") input = fix(input);
+      else if (input && typeof input.url === "string") input = new Request(fix(input.url), input);
+    } catch (e) { /* hand the original over rather than breaking the call */ }
+    return fetched.call(this, input, init);
+  };
+  var open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    arguments[1] = fix(url);
+    return open.apply(this, arguments);
+  };
+  ["pushState", "replaceState"].forEach(function (name) {
+    var original = history[name];
+    history[name] = function (state, title, url) {
+      return original.call(this, state, title, url == null ? url : fix(url));
+    };
+  });
+  function wrap(Original) {
+    if (!Original) return Original;
+    var Wrapped = function (url, extra) { return new Original(fix(url), extra); };
+    Wrapped.prototype = Original.prototype;
+    for (var key in Original) { Wrapped[key] = Original[key]; }
+    ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach(function (k) {
+      if (k in Original) Wrapped[k] = Original[k];
+    });
+    return Wrapped;
+  }
+  window.WebSocket = wrap(window.WebSocket);
+  window.EventSource = wrap(window.EventSource);
+})();
+"""
+"""Teaches an app's own JavaScript where it is mounted.
+
+A `<base>` fixes relative URLs and the markup rewrite fixes root-absolute ones,
+but a URL a script builds at runtime is beyond both: `fetch("/api/overview")`
+resolves against the origin, leaves the mount, and comes back as the hub's 404.
+The documented answer is for the app to honour `X-Forwarded-Prefix`, which is
+correct and which most apps do not do.
+
+So the same rule is applied where the URL is actually made. Only same-origin
+paths are touched, and only ones not already under the mount, so an app that
+does honour the header is left exactly as it was. An absolute URL to somewhere
+else — including the hub's own origin written out in full — is never rewritten,
+which is the escape hatch for an app that means to call the hub itself.
+
+Trusted apps only. A sandboxed page has an opaque origin, where every request
+is cross-origin whatever its path, so there is nothing here to fix.
+"""
+
 # Root-absolute references in markup: src="/x", href='/x', action=/x. Not
 # protocol-relative (`//host/x`), which is a different origin and not ours to
 # rewrite.
@@ -83,6 +154,15 @@ def _rewrite_root_absolute(body: bytes, prefix: str) -> bytes:
     and need the upstream to honour the `X-Forwarded-Prefix` it is sent.
     """
     return ROOT_ABSOLUTE.sub(rb"\1\2" + prefix.rstrip("/").encode() + b"/", body)
+
+
+def _inject_shim(body: bytes, prefix: str) -> bytes:
+    """Add the runtime URL shim to a document, right after its <base>."""
+    script = b"<script>" + (SHIM % json.dumps(prefix.rstrip("/"))).encode() + b"</script>"
+    match = BASE_TAG.search(body)
+    if match:
+        return body[: match.end()] + script + body[match.end():]
+    return script + body
 
 
 def _inject_base(body: bytes, prefix: str) -> bytes:
@@ -152,6 +232,8 @@ async def forward(request: Request, upstream_base: str, prefix: str, *,
     if "text/html" in content_type:
         content = _rewrite_root_absolute(content, prefix)
         content = _inject_base(content, prefix)
+        if trusted:
+            content = _inject_shim(content, prefix)
     elif "text/css" in content_type:
         # url(/x) inside a stylesheet has the same problem as src="/x".
         content = re.sub(rb"""(url\(\s*["']?)/(?!/)""",
@@ -274,3 +356,100 @@ async def check(upstream_base: str, prefix: str, transport: object = None) -> di
         return {"ok": True,
                 "detail": f"Reachable, and nothing found that would stop it working at {prefix}."}
     return {"ok": True, "detail": "Reachable, with caveats — " + "; ".join(findings)}
+
+
+# ── websockets ────────────────────────────────────────────────────────────
+
+WS_STRIP_REQUEST = STRIP_REQUEST | {
+    # The handshake headers belong to the connection the library makes for
+    # itself; passing ours along would describe a different negotiation.
+    "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
+    "sec-websocket-protocol", "connection", "upgrade",
+}
+
+
+def socket_url(upstream_base: str, path: str, query: str) -> str:
+    """The upstream address for a socket, from the same http(s) base as the rest."""
+    target = urljoin(upstream_base.rstrip("/") + "/", path.lstrip("/"))
+    parsed = urlparse(target)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    rebuilt = parsed._replace(scheme=scheme).geturl()
+    return f"{rebuilt}?{query}" if query else rebuilt
+
+
+async def forward_socket(websocket: Any, upstream_base: str, path: str, *,
+                         identity: dict[str, str] | None = None) -> None:
+    """Pump one websocket between the browser and the backend's own server.
+
+    Long-polling and SSE survive the HTTP proxy above because they are requests;
+    a websocket is not, and until now the answer was "not proxied" — which for
+    a real app means the hub cannot front it, and it needs its own hostname
+    after all. That is the thing this proxy exists to avoid.
+
+    Authorisation happened before we got here, on the same session cookie and
+    the same grant as every other request to this mount. The cookie itself is
+    not forwarded: the upstream has no business with the hub's session.
+    """
+    import websockets
+    from websockets.asyncio.client import connect
+
+    target = socket_url(upstream_base, path, websocket.url.query)
+    headers = {k: v for k, v in websocket.headers.items()
+               if k.lower() not in WS_STRIP_REQUEST}
+    headers["x-forwarded-prefix"] = f"/ui/{websocket.path_params['slug']}"
+    headers.update(identity or {})
+    offered = websocket.scope.get("subprotocols") or []
+
+    try:
+        upstream = await connect(target, additional_headers=headers,
+                                 subprotocols=offered or None, open_timeout=TIMEOUT,
+                                 max_size=MAX_BYTES)
+    except Exception as exc:  # noqa: BLE001 - reported to the browser as a close
+        log.info("ui proxy: websocket to %s failed: %s", target, exc)
+        # 1011 rather than refusing the handshake: a browser is told far more
+        # by a close code than by a connection that simply did not open.
+        await websocket.close(code=1011, reason="The backend's socket could not be reached.")
+        return
+
+    await websocket.accept(subprotocol=upstream.subprotocol)
+    log.info("ui proxy: websocket open to %s", target)
+    try:
+        async with anyio.create_task_group() as pumps:
+            pumps.start_soon(_to_upstream, websocket, upstream, pumps.cancel_scope)
+            pumps.start_soon(_to_browser, websocket, upstream, pumps.cancel_scope)
+    finally:
+        await upstream.close()
+        with contextlib.suppress(Exception):
+            await websocket.close()
+
+
+async def _to_upstream(websocket: Any, upstream: Any, scope: Any) -> None:
+    """Browser to backend. Ends the pair when either side hangs up."""
+    from starlette.websockets import WebSocketDisconnect
+
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            data = message.get("text")
+            await upstream.send(message["bytes"] if data is None else data)
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 - one failed pump closes the pair
+        log.debug("ui proxy: browser-to-backend pump ended", exc_info=True)
+    finally:
+        scope.cancel()
+
+
+async def _to_browser(websocket: Any, upstream: Any, scope: Any) -> None:
+    try:
+        async for frame in upstream:
+            if isinstance(frame, bytes):
+                await websocket.send_bytes(frame)
+            else:
+                await websocket.send_text(frame)
+    except Exception:  # noqa: BLE001 - one failed pump closes the pair
+        log.debug("ui proxy: backend-to-browser pump ended", exc_info=True)
+    finally:
+        scope.cancel()

@@ -22,6 +22,8 @@ The cost is real and you will hit it:
 2. **Every asset is cross-origin.** An ES module — always fetched in CORS mode —
    will not load, and no header fixes it. That is what an opaque origin means.
 3. **`fetch` from your own page** to your own backend is cross-origin too.
+4. **No websocket.** The hub authorises one by session cookie, and a sandboxed
+   page has no cookies.
 
 If your app is a server-rendered page with plain `<script>` tags and relative
 asset paths, sandboxed works and is the safer choice.
@@ -52,6 +54,14 @@ none of this — it could not act on it anyway.
 does; over HTTP it sees a method and a path. What a level means inside your app
 is yours to decide — but decide it, or the level stops at the connector.
 
+A trusted app also gets its URLs fixed up at runtime. `fetch("/api/overview")`
+resolves against the origin and would leave the mount, so the hub injects a
+small script that puts same-origin paths back under `/ui/<slug>`. It covers
+`fetch`, `XMLHttpRequest`, `history.pushState`, `WebSocket` and `EventSource`,
+and leaves alone anything already under the mount — so an app that honours
+`X-Forwarded-Prefix` is untouched — and anything written as an absolute URL
+elsewhere, which is the escape hatch if you mean to call something else.
+
 ## Four things a proxied interface has to do
 
 The **Check UI** button on the backend's card tests these against your running
@@ -63,9 +73,14 @@ interface rather than leaving you to find out from a browser error.
    cause. An app that answers unknown paths with its index page produces exactly
    this.
 3. **Relative asset paths, or honour `X-Forwarded-Prefix`.** The hub injects a
-   `<base>` and rewrites root-absolute references in markup and CSS. URLs your
-   JavaScript builds at runtime are beyond both, so read the header.
-4. **No WebSockets.** They are not proxied.
+   `<base>` and rewrites root-absolute references in markup and CSS. For a
+   trusted app the runtime shim covers the rest; for a sandboxed one, read the
+   header, which is sent on every request.
+4. **Websockets are proxied**, for a trusted app, through the same mount and the
+   same grant. Your socket's address is derived from the **Web interface**
+   setting — `http://` becomes `ws://`, `https://` becomes `wss://` — so there
+   is nothing extra to configure, and your handler is sent the same
+   `X-Forwarded-Prefix`, `X-Mcphub-User` and `X-Mcphub-Role` as a request.
 
 ## Being reachable at all
 

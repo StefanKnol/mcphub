@@ -225,15 +225,26 @@ browser error:
    than the type. An app that answers unknown paths with its index page
    produces exactly this.
 3. **Relative asset paths, or honour `X-Forwarded-Prefix`.** Root-absolute
-   references in markup are rewritten under the mount; URLs a script builds at
-   runtime cannot be, so those need the header, which is sent on every request.
-4. **No WebSockets**, which are not proxied.
+   references in markup are rewritten under the mount; a trusted app also gets
+   its runtime URLs fixed (see below). A sandboxed one needs the header, which
+   is sent on every request.
+4. **Websockets are proxied** for a trusted app, through the same mount and the
+   same grant, with the socket address derived from the same setting. A
+   sandboxed page cannot open one: the hub authorises a socket by session
+   cookie, and an opaque origin has none.
 
-Asset paths are handled two ways: a `<base>` is injected so relative references
-resolve under the mount, and root-absolute ones in markup (`href="/styles.css"`,
-`url(/img.png)` in CSS) are rewritten to point at it. URLs a script builds at
-runtime are beyond both — for those the interface needs to honour the
-`X-Forwarded-Prefix` header it is sent.
+Asset paths are handled three ways. A `<base>` is injected so relative
+references resolve under the mount. Root-absolute ones in markup
+(`href="/styles.css"`, `url(/img.png)` in CSS) are rewritten to point at it.
+And a **trusted** app is sent a small script that does the same to URLs its own
+JavaScript builds at runtime — `fetch`, `XMLHttpRequest`, `history.pushState`,
+`WebSocket`, `EventSource` — because `fetch("/api/overview")` resolves against
+the origin, leaves the mount and comes back as the hub's 404. It leaves alone
+anything already under the mount, so an app that honours `X-Forwarded-Prefix`
+is untouched, and anything written as an absolute URL, which is the escape
+hatch for an app that means to call something else. A sandboxed app gets none
+of it: its origin is opaque, so every request is cross-origin whatever its
+path, and there is nothing there that a path would fix.
 
 If an asset comes back blocked by **CORB (Cross-Origin Read Blocking)**, the
 cause is almost always that the request did not reach the upstream and the
@@ -242,8 +253,6 @@ stylesheet and names the stylesheet, not the path. Check what the request
 actually returned before suspecting the sandbox. Note also that `nosniff` is
 deliberately *not* added to proxied responses — adding it to content whose
 types we do not control turns a merely mislabelled asset into a hard block.
-
-WebSockets are not proxied.
 
 ### Accounts
 

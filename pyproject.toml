@@ -9,6 +9,10 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "jinja2>=3.1",
     "cryptography>=44.0",
+    # The websocket client for proxying an app's own sockets. uvicorn[standard]
+    # pulls it in for the server side; naming it here says the proxy depends on
+    # it directly, rather than on whatever uvicorn happens to install.
+    "websockets>=15",
 ]
 
 [project.optional-dependencies]

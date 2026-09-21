@@ -15,8 +15,9 @@ from urllib.parse import quote, urlparse
 from typing import Any
 
 from starlette.requests import Request
+from starlette.websockets import WebSocket
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
 from starlette.templating import Jinja2Templates
 
 from ..crypto import hash_password, verify_password
@@ -38,6 +39,7 @@ from ..plugins.base import (
 from .session import current_user, end_session, start_session
 from .uiproxy import check as check_ui
 from .uiproxy import forward as proxy_ui
+from .uiproxy import forward_socket as proxy_socket
 from .uiproxy import is_proxyable
 
 log = logging.getLogger(__name__)
@@ -1350,6 +1352,39 @@ def build(hub: Any) -> list[Route]:
             return JSONResponse({"ok": False, "detail": "No web interface is configured."})
         return JSONResponse(await check_ui(target, f"/ui/{slug}/"))
 
+    async def backend_ui_socket(websocket: WebSocket) -> None:
+        """A backend's own websocket, through the same mount as its pages.
+
+        Authorised exactly as the pages are — the session cookie and the same
+        grant — because a socket that skipped the grant would be a way around
+        it, and the pages are where anyone would think to look for the rule.
+        """
+        slug = websocket.path_params["slug"]
+        user = current_user(hub.db, websocket)
+        if not user or not may_use(user, slug):
+            await websocket.close(code=1008, reason="Not signed in, or no access to this backend.")
+            return
+
+        row = hub.backend_row(slug)
+        if row is None:
+            await websocket.close(code=1008, reason="No such backend.")
+            return
+        instance = hub.instance_from_row(row)
+        target = str(instance.get("ui_url", "") or "").strip()
+        if not target or not is_proxyable(target) or not instance.config.get("ui_proxy", True):
+            await websocket.close(code=1008, reason="This backend has no interface served here.")
+            return
+
+        trusted = bool(instance.config.get("ui_trusted"))
+        identity = {
+            "x-mcphub-user": str(user["username"]),
+            "x-mcphub-admin": "1" if is_admin(user) else "0",
+            "x-mcphub-role": level_for(user, slug),
+            **hub.apps.header(slug),
+        } if trusted else None
+        await proxy_socket(websocket, target, websocket.path_params.get("path", ""),
+                           identity=identity)
+
     async def backend_ui_root(request: Request) -> Response:
         # The bare mount has no trailing slash, so every relative link on the
         # page would resolve one level too high. Redirecting once fixes the lot.
@@ -1501,6 +1536,11 @@ def build(hub: Any) -> list[Route]:
         Route("/backends/{slug}/pin", backend_pin, methods=["POST"]),
         Route("/backends/{slug}/delete", backend_delete, methods=["POST"]),
         Route("/backends/{slug}/ui-check", backend_ui_check, methods=["POST"]),
+        # Ahead of the HTTP routes: a websocket scope never matches a Route,
+        # but keeping them together is what stops one being added without the
+        # other the next time this list is edited.
+        WebSocketRoute("/ui/{slug}/{path:path}", backend_ui_socket),
+        WebSocketRoute("/ui/{slug}/", backend_ui_socket),
         Route("/ui/{slug}", backend_ui_root),
         Route("/ui/{slug}/", backend_ui, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
         Route("/ui/{slug}/{path:path}", backend_ui,
