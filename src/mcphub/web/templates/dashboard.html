@@ -71,7 +71,7 @@ connector so their tools stay in separate lists.</p>
         <span class="result" id="r-{{ b.slug }}"></span>
         {% if can_manage %}<form method="post" action="/backends/{{ b.slug }}/delete" style="margin-left:auto"
               data-confirm-title="Delete {{ b.title }}?"
-              data-confirm="Its endpoint stops working immediately and its stored credentials are erased. This cannot be undone."
+              data-confirm="Its endpoint stops working immediately and its stored credentials are erased. This cannot be undone. Anything it wrote to its own storage directory is left on disk."
               data-confirm-action="Delete"
               data-confirm>
           <button class="danger" type="submit">Delete</button>

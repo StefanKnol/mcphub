@@ -22,6 +22,7 @@ from .auth.cimd import ClientMetadataResolver
 from .crypto import SecretBox, hash_password, load_or_create_key
 from .db import Database, utcnow
 from .mounts import MountManager
+from . import storage
 from .plugins.base import BackendInstance
 from .plugins.registry import PluginRegistry
 from .updates import UpdateChecker
@@ -65,6 +66,10 @@ class Hub:
             plugin_id=row["plugin_id"],
             config=json.loads(row["config_json"]),
             secrets=self.secrets.open(row["secrets_blob"]),
+            # The path, not the directory: reading a backend happens on every
+            # page render, and creating it belongs where it is about to be
+            # used — when the backend is saved, and when it is mounted.
+            storage=storage.path_for(self.settings.data_dir, row["slug"]),
         )
 
     def current_instance(self, slug: str) -> BackendInstance | None:

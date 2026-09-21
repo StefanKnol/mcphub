@@ -288,6 +288,41 @@ Levels apply to tools. Resources and prompts are read-shaped by nature and
 nothing in the protocol marks one of them dangerous, so they are not filtered.
 An administrator holds every backend at `admin` without a grant row.
 
+### Storage
+
+Every backend gets a directory of its own at `$MCPHUB_DATA_DIR/apps/<slug>`,
+for a database or anything else it needs to keep across restarts. It is inside
+the data volume, so it is backed up with everything else, and the path is shown
+on the backend's own settings page.
+
+**A server the hub launches** finds the path in `MCPHUB_STORAGE`. Almost no
+server asks for its data directory under that name — it wants `DB_PATH` or
+`STATE_DIR` or whatever it chose — so `$MCPHUB_STORAGE` in any environment
+value you configure is replaced with the real path:
+
+```
+DB_PATH=$MCPHUB_STORAGE/app.db
+```
+
+Nothing else would expand that: a launched server is handed its environment
+directly, with no shell in between.
+
+**A server reached over a URL** is somewhere else — another container, or
+another machine — and the hub cannot hand a directory across that boundary. It
+creates the directory and tells you where it is; mounting it is yours to do:
+
+```
+-v /data/apps/myapp:/data
+```
+
+A storage API that apps called back into would cross that boundary, but only
+for an app written against it. A directory works for anything that can be told
+where to put its files, which is nearly everything.
+
+Renaming a backend moves its directory with it. Deleting one does **not** delete
+its files — unmounting is reversible and a dropped database is not, so that is
+left to you.
+
 ### Configuration
 
 Only these are environment variables. Everything else lives in the database.
@@ -295,7 +330,7 @@ Only these are environment variables. Everything else lives in the database.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MCPHUB_PUBLIC_URL` | `http://localhost:8080` | Externally reachable origin. Must be HTTPS in production. |
-| `MCPHUB_DATA_DIR` | `/data` | Holds `hub.db` and `master.key`. |
+| `MCPHUB_DATA_DIR` | `/data` | Holds `hub.db`, `master.key` and each backend's [storage](#storage). |
 | `MCPHUB_HOST` / `MCPHUB_PORT` | `0.0.0.0` / `8080` | Bind address. |
 | `MCPHUB_CIMD` | `1` | Accept a `client_id` that is an HTTPS URL describing the client. Set `0` to require registration instead. |
 | `MCPHUB_UPDATE_INTERVAL` | `3600` | Seconds between registry update checks. `0` disables them. |

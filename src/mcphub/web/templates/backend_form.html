@@ -170,6 +170,24 @@
   </div>
   {% endif %}
 
+  {% if row and storage_path %}
+  <div class="field">
+    <label>Storage</label>
+    <p class="help">A directory of this backend's own, on the hub's data volume, kept
+      across restarts and backed up with everything else.</p>
+    <p class="path"><code>{{ storage_path }}</code></p>
+    <ul class="legend">
+      <li><strong>A server the hub launches</strong> finds it in
+        <code>{{ storage_var }}</code>, and <code>${{ storage_var }}</code> in any
+        environment value on this page is replaced with it — so
+        <code>DB_PATH=${{ storage_var }}/app.db</code> does what it looks like.</li>
+      <li><strong>A server reached over a URL</strong> is somewhere else, and the hub
+        cannot hand it a directory. Mount this path into that container yourself:
+        <code>-v {{ storage_path }}:/data</code>.</li>
+    </ul>
+  </div>
+  {% endif %}
+
   <div class="field">
     <div class="checkline">
       <input type="checkbox" id="enabled" name="enabled" {% if enabled %}checked{% endif %}>

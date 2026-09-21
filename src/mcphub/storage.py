@@ -1,0 +1,92 @@
+"""Somewhere a backend can keep things between restarts.
+
+Every backend gets a directory of its own under the data volume, named after
+its slug. A database, an index, whatever it needs — the hub does not care what
+goes in, only that it survives a container restart and is backed up with
+everything else.
+
+There is an honest limit to this, and it is worth stating plainly rather than
+discovering later. The hub can *provide* the directory only to a server it
+launches itself, because such a server is its own subprocess and shares its
+filesystem. A backend reached over a URL — an app in another container, or on
+another machine — is told the path and nothing more; whether anything is there
+is between that container and whoever wrote its compose file. The hub creates
+the directory either way, so the path exists to be mounted, but it cannot mount
+it on something else's behalf.
+
+The alternative — a storage API the hub serves and apps call back into — would
+work across that boundary, but only for an app written against it. This works
+for anything that can be told where to put its files, which is nearly
+everything, so it is the default.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+ENV_VAR = "MCPHUB_STORAGE"
+"""What a launched server finds the path in."""
+
+DIRNAME = "apps"
+
+_SAFE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+_REFERENCE = re.compile(r"\$\{" + ENV_VAR + r"\}|\$" + ENV_VAR + r"(?![A-Za-z0-9_])")
+
+
+def path_for(data_dir: Path, slug: str) -> Path:
+    """Where this backend's own files live. Does not create anything."""
+    if not _SAFE.match(slug):
+        # Slugs are already narrower than this, but the path is built from one,
+        # and a rule that only holds somewhere else is not a rule.
+        raise ValueError(f"{slug!r} cannot name a directory")
+    return Path(data_dir) / DIRNAME / slug
+
+
+def ensure(data_dir: Path, slug: str) -> Path | None:
+    """The directory, created if it was not there. None if it could not be.
+
+    A hub whose volume is read-only should still serve every backend that does
+    not need storage, so this reports failure rather than raising.
+    """
+    try:
+        path = path_for(data_dir, slug)
+    except ValueError:
+        log.warning("no storage for backend %r: its name cannot be a directory", slug)
+        return None
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("could not create storage for backend %r at %s: %s", slug, path, exc)
+        return None
+    return path
+
+
+def expand(value: str, storage: Path | str) -> str:
+    """Replace `$MCPHUB_STORAGE` / `${MCPHUB_STORAGE}` in a configured value.
+
+    A launched server is handed its environment directly, with no shell in
+    between, so nothing else would ever expand it — and `DB_PATH=$MCPHUB_STORAGE/x.db`
+    is how someone will write it whether or not it works.
+    """
+    return _REFERENCE.sub(str(storage).replace("\\", "\\\\"), value)
+
+
+def rename(data_dir: Path, old: str, new: str) -> None:
+    """Follow a backend that was given a new slug, so its files go with it."""
+    if old == new:
+        return
+    try:
+        source, target = path_for(data_dir, old), path_for(data_dir, new)
+    except ValueError:
+        return
+    if not source.is_dir() or target.exists():
+        return
+    try:
+        source.rename(target)
+        log.info("moved storage for %r to %r", old, new)
+    except OSError as exc:
+        log.warning("could not move storage from %s to %s: %s", source, target, exc)

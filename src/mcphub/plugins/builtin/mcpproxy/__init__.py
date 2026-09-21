@@ -36,6 +36,7 @@ from ...base import (
     Option,
     PluginDefaults,
 )
+from .... import storage
 from .mirror import mirror_prompt, mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
 
@@ -81,13 +82,23 @@ def _collect_env(instance: BackendInstance) -> dict[str, str]:
     Two sources, because both exist: variables the upstream declared are stored
     one per key so the form can type them, and the freeform textarea covers
     anything it did not declare. Older backends only have the textarea.
+
+    Whichever it came from, `$MCPHUB_STORAGE` in a value becomes the backend's
+    own directory. Almost no server asks for its data path under that name — it
+    wants `DB_PATH` or `--state-dir` or whatever it chose — so being able to
+    write `DB_PATH=$MCPHUB_STORAGE/app.db` is what makes the directory usable
+    at all. Nothing else would expand it: a launched server is handed its
+    environment directly, with no shell in between.
     """
     env = _parse_env(str(instance.get("env", "") or ""))
     for source in (instance.config, instance.secrets):
         for key, value in source.items():
             if key.startswith(ENV_PREFIX) and value not in (None, ""):
                 env[key[len(ENV_PREFIX):]] = str(value)
-    return env
+    if instance.storage is None:
+        return env
+    return {storage.ENV_VAR: str(instance.storage),
+            **{k: storage.expand(v, instance.storage) for k, v in env.items()}}
 
 
 def _declared_env(instance: BackendInstance) -> list[dict[str, Any]]:
@@ -240,8 +251,11 @@ class McpProxyPlugin(PluginDefaults):
                 "The cost is real: on the hub's origin, the app's JavaScript can call the "
                 "hub's own endpoints as whoever is signed in. Tick it only for an app you "
                 "wrote or would trust with your administrator session. "
-                "Trusted apps are also sent the signed-in account in X-Mcphub-User, so they "
-                "can use this hub's accounts instead of having their own."
+                "Trusted apps are also sent the signed-in account in X-Mcphub-User and its "
+                "level on this backend in X-Mcphub-Role, so they can use this hub's accounts "
+                "instead of having their own. The level is reported, not enforced: over MCP "
+                "tools say what they do, over HTTP a POST is just a POST, so what a level "
+                "means inside the app is the app's to decide."
             ),
         ),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),

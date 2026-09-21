@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
 
 from mcp.server.mcpserver import MCPServer
@@ -179,6 +180,12 @@ class BackendInstance:
     plugin_id: str
     config: dict[str, Any] = field(default_factory=dict)
     secrets: dict[str, Any] = field(default_factory=dict)
+    storage: Path | None = None
+    """A directory of this backend's own, under the data volume, for anything
+    it needs to keep between restarts. None when the hub could not create it —
+    a read-only volume, say — so a plugin that needs one should say so rather
+    than write into nowhere. See `mcphub.storage` for what the hub can and
+    cannot do with it across a container boundary."""
 
     def get(self, key: str, default: Any = None) -> Any:
         """Read a value without caring whether it was stored secret or plain."""

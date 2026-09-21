@@ -23,6 +23,7 @@ from ..crypto import hash_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
 from .. import roles
+from .. import storage
 from ..plugins.base import (
     CLEAR_PREFIX,
     BackendInstance,
@@ -253,11 +254,18 @@ def _save_backend(hub: Any, *, slug: str, plugin_id: str, title: str, enabled: b
             (slug, plugin_id, title, int(enabled), json.dumps(config), blob, utcnow(), utcnow()),
         )
     else:
+        # A renamed backend takes its files with it. Leaving them behind would
+        # look like the rename had wiped them, and the old directory would sit
+        # there unattached to anything.
+        storage.rename(hub.settings.data_dir, row["slug"], slug)
         hub.db.execute(
             "UPDATE backends SET slug = ?, title = ?, enabled = ?, config_json = ?, "
             "secrets_blob = ?, updated_at = ? WHERE id = ?",
             (slug, title, int(enabled), json.dumps(config), blob, utcnow(), row["id"]),
         )
+    # Created at save rather than only at mount, so the path is there to be
+    # bind-mounted before the thing that needs it is started.
+    storage.ensure(hub.settings.data_dir, slug)
 
 
 def stored_value(instance: BackendInstance | None, key: str) -> Any:
@@ -663,10 +671,17 @@ def build(hub: Any) -> list[Route]:
                 instance = hub.instance_from_row(row)
 
         if request.method == "GET":
+            # The page tells the administrator to bind-mount this path, so it
+            # should be there when they go and do it — including for a backend
+            # that predates storage and has not been saved since.
+            if row is not None:
+                storage.ensure(hub.settings.data_dir, row["slug"])
             return render(request, "backend_form.html", plugin=plugin, row=row,
                           fields=await form_values(plugin, instance), errors=[], field_errors={},
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
+                          storage_path=instance.storage if instance else None,
+                          storage_var=storage.ENV_VAR,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -715,6 +730,8 @@ def build(hub: Any) -> list[Route]:
                           errors=errors + banner, field_errors=beside,
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
+                          storage_path=instance.storage if instance else None,
+                          storage_var=storage.ENV_VAR,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
