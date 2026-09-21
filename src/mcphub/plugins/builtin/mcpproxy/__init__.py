@@ -212,6 +212,24 @@ class McpProxyPlugin(PluginDefaults):
         ConfigField("verify_tls", "Verify TLS certificate", type="bool", default=True, required=False,
                     show_if=(CONNECTION_KEY, "url"),
                     help="Turn off only for an https upstream with a self-signed certificate."),
+        ConfigField(
+            "ui_url", "Web interface", required=False, placeholder="http://10.0.0.50:8080",
+            help=(
+                "If this server also has a web interface, its address. Leave blank if it has none. "
+                "Independent of how MCP itself is reached."
+            ),
+        ),
+        ConfigField(
+            "ui_proxy", "Serve the interface through the hub", type="bool", default=True,
+            required=False, show_if=None,
+            help=(
+                "Puts it at /ui/<name>, behind this hub's sign-in and the same per-account grants "
+                "as the MCP endpoint — so an interface with no login of its own gets one, without "
+                "publishing another hostname. It runs sandboxed, in an origin of its own, which "
+                "means an interface that has its own login cannot use its cookies through here. "
+                "Turn this off to simply link to the address above instead."
+            ),
+        ),
         ConfigField("timeout", "Timeout (seconds)", type="number", default=30, required=False),
         ConfigField(
             ALLOW_KEY, "Tools to expose", type="multiselect", required=False,

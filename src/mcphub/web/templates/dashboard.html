@@ -43,6 +43,12 @@ connector so their tools stay in separate lists.</p>
       </div>
       {% if b.enabled %}<code class="url">{{ b.url }}</code>{% endif %}
       <div class="actions">
+        {% if b.ui_proxied %}
+          <a class="btn" href="/ui/{{ b.slug }}/" title="Its own interface, served through the hub behind this sign-in">Open</a>
+        {% elif b.ui_url %}
+          <a class="btn" href="{{ b.ui_url }}" target="_blank" rel="noreferrer noopener"
+             title="Opens the backend's own address directly, outside the hub">Open &#8599;</a>
+        {% endif %}
         {% if can_manage %}<a class="btn" href="/backends/{{ b.slug }}">Settings</a>{% endif %}
         <button type="button" class="test" data-slug="{{ b.slug }}">Test</button>
         {% if can_manage %}<button type="button" class="refresh" data-slug="{{ b.slug }}"

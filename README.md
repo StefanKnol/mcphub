@@ -190,6 +190,37 @@ fenced, so:
 Set `MCPHUB_CIMD=0` to turn it off, at the cost of only working with clients
 that register.
 
+### A backend's own web interface
+
+A backend that also has a web UI can have it served at `/ui/<name>`, behind the
+same sign-in and the same per-account grants as its MCP endpoint. Set its
+address on the backend, and untick *Serve the interface through the hub* if you
+would rather just link to it.
+
+The point is access control, not convenience: an interface with no login of its
+own gets one, on a hostname that already exists. Publishing a second name for
+it would be another surface that can expose `/mcp` by accident, and would need
+its own login anyway.
+
+The proxied page runs in an **opaque origin**, forced by a
+`Content-Security-Policy: sandbox` header. That is not belt-and-braces. Served
+on the hub's own origin, a proxied page's JavaScript can do:
+
+```js
+fetch('/accounts', {credentials: 'include'})   // 200, as the signed-in admin
+```
+
+`SameSite` does not help, because that is not a cross-site request. The sandbox
+is what stops it.
+
+The cost is symmetrical: an opaque origin has no cookies, so an interface with
+its own login cannot authenticate through here. For one with no login — the
+case this exists for — that costs nothing.
+
+Not handled: WebSockets, and root-absolute asset paths (`/static/app.js`). A
+`<base>` is injected so relative paths work; an interface that writes
+root-absolute URLs needs to honour the `X-Forwarded-Prefix` header it is sent.
+
 ### Accounts
 
 The first run creates one administrator. Further accounts are added under

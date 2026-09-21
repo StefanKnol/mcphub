@@ -32,6 +32,8 @@ from ..plugins.base import (
     as_field_errors,
 )
 from .session import current_user, end_session, start_session
+from .uiproxy import forward as proxy_ui
+from .uiproxy import is_proxyable
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +56,7 @@ no real backend can hold the name.
 # ahead of `/backends/{slug}` and both lead to the same handler, so a backend
 # named that could be created and then never opened again: its settings page
 # would forever render the blank create form instead.
-RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp",
+RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz", "mcp", "ui",
                   "authorize", "token", "register", "registry", "revoke", NEW_BACKEND}
 
 
@@ -587,6 +589,9 @@ def build(hub: Any) -> list[Route]:
                 "initials": _initials(row["title"]),
                 "version": _config_value(row, "upstream_version"),
                 "latest": _config_value(row, "latest_version"),
+                "ui_url": _config_value(row, "ui_url"),
+                "ui_proxied": bool(_config_value(row, "ui_url")
+                                   and json.loads(row["config_json"]).get("ui_proxy", True)),
                 "pinnable": bool(_config_value(row, "registry_name")
                                  and json.loads(row["config_json"]).get("registry_package")),
                 "pinned": (lambda r: r["version"] if r else "")(hub.db.one(
@@ -1131,6 +1136,48 @@ def build(hub: Any) -> list[Route]:
                       config=config, secrets=secrets)
         return RedirectResponse(f"/backends/{slug}", status_code=303)
 
+    # ── a backend's own web interface ─────────────────────────────────────
+
+    async def backend_ui(request: Request) -> Response:
+        """Serve a backend's interface behind this hub's sign-in.
+
+        The value is the access control: an interface with no login of its own
+        gets one, reachable at a path on a hostname that already exists rather
+        than a new one published for it.
+
+        Authorised by the browser session, not a bearer token, and by the same
+        grant that governs the MCP endpoint — an account that cannot use a
+        backend cannot see its interface either.
+        """
+        slug = request.path_params["slug"]
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not may_use(user, slug):
+            return denied(request, "This account has not been granted access to that backend.")
+
+        row = hub.backend_row(slug)
+        if row is None:
+            return render(request, "error.html", message=f"No backend named {slug!r}.",
+                          status_code=404)
+        instance = hub.instance_from_row(row)
+        target = str(instance.get("ui_url", "") or "").strip()
+        if not target or not is_proxyable(target):
+            return render(request, "error.html",
+                          message=f"{row['title']} has no web interface configured.",
+                          status_code=404)
+        if not instance.config.get("ui_proxy", True):
+            return render(request, "error.html",
+                          message=f"{row['title']}'s interface is set to be opened directly, "
+                                  "not served through the hub.", status_code=404)
+
+        return await proxy_ui(request, target, f"/ui/{slug}/")
+
+    async def backend_ui_root(request: Request) -> Response:
+        # The bare mount has no trailing slash, so every relative link on the
+        # page would resolve one level too high. Redirecting once fixes the lot.
+        return RedirectResponse(f"/ui/{request.path_params['slug']}/", status_code=307)
+
     # ── accounts ──────────────────────────────────────────────────────────
 
     async def accounts(request: Request) -> Response:
@@ -1258,6 +1305,10 @@ def build(hub: Any) -> list[Route]:
         Route("/backends/{slug}/versions", backend_versions),
         Route("/backends/{slug}/pin", backend_pin, methods=["POST"]),
         Route("/backends/{slug}/delete", backend_delete, methods=["POST"]),
+        Route("/ui/{slug}", backend_ui_root),
+        Route("/ui/{slug}/", backend_ui, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
+        Route("/ui/{slug}/{path:path}", backend_ui,
+              methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
     ]
 
 
