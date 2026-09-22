@@ -265,6 +265,24 @@ The first run creates one administrator. Further accounts are added under
 | May configure backends | Add, edit and remove backends. They are shared, so this affects everyone granted them. |
 | Grants | Which backends this account may use, and at which level. |
 
+Each account also carries two actions, kept apart on purpose:
+
+| | |
+| --- | --- |
+| **Reset password** | Generates one, shows it once, and signs out their other browsers. Connectors they had already authorised keep working. |
+| **Revoke connectors** | Cuts every token and session this account holds. The password and the grants are left alone. |
+
+A forgotten password is the ordinary case, and breaking every connector over it
+would make reset the button nobody presses. A password that got out is the
+other case, and then cutting the connectors is the whole point. One action
+doing both silently would be wrong for whichever case you were actually in.
+
+There is no email here, so reset is the only way back into an account whose
+password is lost — without it, such an account has to be deleted and rebuilt,
+grants and all. The generated password is shown on the page rather than carried
+in a redirect: a query string is written into history, logs and referrers, which
+is the one place a password must not be.
+
 Backends are shared rather than per-account: configured once, then granted out,
 so a router's password lives in one place and there is one page showing who can
 reach it.

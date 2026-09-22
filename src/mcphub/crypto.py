@@ -99,3 +99,16 @@ def hash_token(token: str) -> str:
 
 def new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def new_password() -> str:
+    """A password to hand to a person, so it has to survive being read aloud.
+
+    Grouped rather than one run of characters: a human is about to copy this
+    into another machine, possibly off a screen, and `token_urlsafe` gives a
+    string where a missed character is invisible until it fails. The entropy is
+    the same either way and far above anything that gets chosen by hand.
+    """
+    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"  # no l, o, 0 or 1
+    groups = ["".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4)]
+    return "-".join(groups)

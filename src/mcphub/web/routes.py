@@ -20,7 +20,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route, WebSocketRoute
 from starlette.templating import Jinja2Templates
 
-from ..crypto import hash_password, verify_password
+from ..crypto import hash_password, hash_token, new_password, verify_password
 from ..db import utcnow
 from .. import registry as mcp_registry
 from .. import appaccess
@@ -38,6 +38,7 @@ from ..plugins.base import (
     show_if_values,
     as_field_errors,
 )
+from .session import COOKIE_NAME as SESSION_COOKIE
 from .session import csrf_ok, csrf_token, current_user, end_session, start_session
 from .uiproxy import check as check_ui
 from .uiproxy import forward as proxy_ui
@@ -1467,15 +1468,15 @@ def build(hub: Any) -> list[Route]:
 
     # ── accounts ──────────────────────────────────────────────────────────
 
-    async def accounts(request: Request) -> Response:
-        user = require_user(request)
-        if not user:
-            return redirect_to_login(request)
-        if not is_admin(user):
-            return denied(request, "Only an administrator can manage accounts.")
+    def accounts_page(request: Request, user: dict[str, Any], *, errors: list[str] | None = None,
+                      issued: dict[str, str] | None = None, note: str = "") -> Response:
+        """The accounts page. Rendered from the POSTs too, not only the GET.
 
+        A generated password is shown once and must not go through a redirect:
+        a query string is written into history, logs and referrers, which is the
+        one place a password should never be.
+        """
         rows = hub.db.query("SELECT * FROM users ORDER BY username")
-        backends = hub.backend_rows()
         # An app has an account so that the grant machinery applies to it, but
         # it is not a person: editing it here would offer to make a backend an
         # administrator. It is listed below instead, where it can be seen and
@@ -1490,10 +1491,91 @@ def build(hub: Any) -> list[Route]:
             "slug": r["username"][len(appaccess.PREFIX):],
             "levels": grant_levels(r["id"]),
         } for r in rows if appaccess.is_app(r["username"])]
-        return render(request, "accounts.html", accounts=listing, backends=backends,
-                      apps=apps, levels=roles.LEVELS, level_help=roles.DESCRIPTIONS,
-                      default_level=roles.DEFAULT,
-                      errors=request.query_params.getlist("error"))
+        return render(request, "accounts.html", accounts=listing,
+                      backends=hub.backend_rows(), apps=apps, levels=roles.LEVELS,
+                      level_help=roles.DESCRIPTIONS, default_level=roles.DEFAULT,
+                      issued=issued, note=note,
+                      errors=errors if errors is not None
+                      else request.query_params.getlist("error"))
+
+    def other_sessions(user_id: int, request: Request) -> None:
+        """End this account's browser sessions, except the one asking.
+
+        An administrator resetting their own password should not be logged out
+        by their own click — and every *other* session for that account is
+        exactly what a reset is for.
+        """
+        mine = request.cookies.get(SESSION_COOKIE)
+        hub.db.execute(
+            "DELETE FROM web_sessions WHERE user_id = ? AND token_hash != ?",
+            (user_id, hash_token(mine) if mine else ""))
+
+    async def account_password(request: Request) -> Response:
+        """Set a new password for someone else, and show it once.
+
+        There is no email here to send a reset link through, so the only way an
+        account gets back in is for an administrator to hand over a new
+        password. Generated rather than typed: it is stronger than what gets
+        chosen under pressure, and there is nothing to confirm or mistype.
+        """
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        target = hub.db.one("SELECT * FROM users WHERE id = ?", (request.path_params["user_id"],))
+        if target is None:
+            return render(request, "error.html", message="No such account.", status_code=404)
+        if appaccess.is_app(target["username"]):
+            return accounts_page(request, user, errors=[
+                "An app has no password to reset. Its credentials are issued to it and "
+                "rotate on their own."])
+
+        password = new_password()
+        hub.db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                       (hash_password(password), target["id"]))
+        other_sessions(int(target["id"]), request)
+        # Connectors survive, as they do when someone changes their own
+        # password: a forgotten password is the ordinary case, and breaking
+        # every connector over it would make this the button nobody presses.
+        # `Revoke connectors` is beside it for when that is what is meant.
+        log.info("password for %r reset by %r", target["username"], user["username"])
+        return accounts_page(request, user,
+                             issued={"username": target["username"], "password": password})
+
+    async def account_revoke(request: Request) -> Response:
+        """Cut every credential this account holds, without changing anything else."""
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        target = hub.db.one("SELECT * FROM users WHERE id = ?", (request.path_params["user_id"],))
+        if target is None:
+            return render(request, "error.html", message="No such account.", status_code=404)
+
+        tokens = hub.db.execute("DELETE FROM tokens WHERE user_id = ?", (target["id"],))
+        hub.db.execute("DELETE FROM auth_codes WHERE user_id = ?", (target["id"],))
+        other_sessions(int(target["id"]), request)
+        if appaccess.is_app(target["username"]):
+            # Its credentials are held in memory as well as hashed in the
+            # database, so the copy the app is using has to go too.
+            hub.apps.revoke(target["username"][len(appaccess.PREFIX):])
+        log.info("credentials for %r revoked by %r", target["username"], user["username"])
+        return accounts_page(request, user, note=(
+            f"Every connector for {target['username']} must be authorised again, and any "
+            "other browser signed in as them has been signed out."))
+
+    async def accounts(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return redirect_to_login(request)
+        if not is_admin(user):
+            return denied(request, "Only an administrator can manage accounts.")
+
+        return accounts_page(request, user)
 
     async def account_create(request: Request) -> Response:
         user = require_user(request)
@@ -1596,6 +1678,8 @@ def build(hub: Any) -> list[Route]:
         Route("/accounts", accounts),
         Route("/accounts/new", account_create, methods=["POST"]),
         Route("/accounts/{user_id:int}", account_update, methods=["POST"]),
+        Route("/accounts/{user_id:int}/password", account_password, methods=["POST"]),
+        Route("/accounts/{user_id:int}/revoke", account_revoke, methods=["POST"]),
         Route("/accounts/{user_id:int}/delete", account_delete, methods=["POST"]),
         Route("/integrate", integrate),
         Route("/registry", registry_search),

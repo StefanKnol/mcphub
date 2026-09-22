@@ -7,6 +7,47 @@ only what it has been granted, checked on every request rather than when it sign
 Each grant also carries a level, which decides how much of the backend it gets.</p>
 
 {% if errors %}<div class="errors">{% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+{% if note %}<div class="card saved">{{ note }}</div>{% endif %}
+
+{% if issued %}
+<div class="card issued">
+  <h2 style="margin-top:0">New password for {{ issued.username }}</h2>
+  <p class="help">Shown once and never again — the hub keeps only a hash of it. Hand it
+    over however you would hand over a password, and have them change it under
+    <strong>Account</strong> once they are in.</p>
+  <div class="toolbar">
+    <code class="secret" id="issued">{{ issued.password }}</code>
+    <button type="button" class="tiny" id="copy-issued">Copy</button>
+    <span class="result" id="copied"></span>
+  </div>
+  <p class="help">Their other browser sessions have been signed out. Connectors they had
+    already authorised keep working; use <strong>Revoke connectors</strong> as well if this
+    reset is because the old password got out.</p>
+</div>
+<script>
+// Replace the POST in history, so a refresh does not reset the password again.
+if (window.history.replaceState) window.history.replaceState({}, "", "/accounts");
+
+document.getElementById("copy-issued").addEventListener("click", async function () {
+  var out = document.getElementById("copied");
+  var text = document.getElementById("issued").textContent;
+  function said(message, ok) { out.textContent = message; out.className = "result " + (ok ? "ok" : "bad"); }
+  try {
+    await navigator.clipboard.writeText(text);
+    said("Copied.", true);
+  } catch (err) {
+    var range = document.createRange();
+    range.selectNodeContents(document.getElementById("issued"));
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    try {
+      if (document.execCommand("copy")) { said("Copied.", true); return; }
+    } catch (ignored) { /* fall through to telling them */ }
+    said("Selected \u2014 copy it yourself.", false);
+  }
+});
+</script>
+{% endif %}
 
 {% for a in accounts %}
 <div class="card">
@@ -76,14 +117,28 @@ Each grant also carries a level, which decides how much of the backend it gets.<
     </div>
   </form>
 
-  {% if not a.is_you %}
-  <form method="post" action="/accounts/{{ a.id }}/delete" style="margin-top:10px"
-        data-confirm-title="Delete {{ a.username }}?"
-        data-confirm="Their connectors stop working immediately: tokens, sessions and grants are all removed. This cannot be undone."
-        data-confirm-action="Delete" data-confirm>
-    <button class="danger" type="submit">Delete account</button>
-  </form>
-  {% endif %}
+  <div class="toolbar" style="margin-top:10px">
+    <form method="post" action="/accounts/{{ a.id }}/password"
+          data-confirm-title="Reset the password for {{ a.username }}?"
+          data-confirm="A new one is generated and shown to you once. Their other browser sessions are signed out; connectors they already authorised keep working."
+          data-confirm-action="Reset it" data-confirm>
+      <button type="submit">Reset password</button>
+    </form>
+    <form method="post" action="/accounts/{{ a.id }}/revoke"
+          data-confirm-title="Revoke {{ a.username }}'s connectors?"
+          data-confirm="Every connector authorised for this account stops working and has to be authorised again. Their other browser sessions are signed out. The account and its password are left alone."
+          data-confirm-action="Revoke" data-confirm>
+      <button type="submit">Revoke connectors</button>
+    </form>
+    {% if not a.is_you %}
+    <form method="post" action="/accounts/{{ a.id }}/delete" style="margin-left:auto"
+          data-confirm-title="Delete {{ a.username }}?"
+          data-confirm="Their connectors stop working immediately: tokens, sessions and grants are all removed. This cannot be undone."
+          data-confirm-action="Delete" data-confirm>
+      <button class="danger" type="submit">Delete account</button>
+    </form>
+    {% endif %}
+  </div>
 </div>
 {% endfor %}
 
