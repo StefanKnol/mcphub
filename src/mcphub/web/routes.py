@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from typing import Any
@@ -26,6 +27,7 @@ from .. import registry as mcp_registry
 from .. import appaccess
 from .. import roles
 from .. import storage
+from ..plugins.builtin.mcpproxy import ADOPT_KEY, ALLOW_KEY
 from ..plugins.builtin.hub import SLUG as HUB_SLUG
 from ..plugins.builtin.hub.prompts import NAME as PROMPT_NAME
 from ..plugins.builtin.hub.prompts import integration_prompt
@@ -72,6 +74,28 @@ RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz
                   # The hub's own backend. Reserved so nothing else can take the
                   # name, and kept by the one thing that is allowed to have it.
                   HUB_SLUG}
+
+
+def adopt_new_tools(config: dict[str, Any], before: set[str], after: set[str]) -> None:
+    """Add tools the upstream has gained to a narrowed selection, if asked.
+
+    Only a narrowed one. An empty selection already means everything, so there
+    is nothing to add to — and writing every name into it would turn "expose
+    whatever this server offers" into a list that silently stops tracking.
+
+    And only against a catalogue that existed before. With nothing to compare
+    to, every tool is new, which on a first save meant adopting the ones the
+    person had just deliberately left unticked.
+    """
+    if not config.get(ADOPT_KEY) or not before:
+        return
+    selected = config.get(ALLOW_KEY)
+    if not isinstance(selected, list) or not selected:
+        return
+    gained = [name for name in sorted(after - before) if name not in selected]
+    if gained:
+        config[ALLOW_KEY] = selected + gained
+        log.info("adopted %d new tool(s): %s", len(gained), ", ".join(gained))
 
 
 def _no_grant(slug: str) -> str:
@@ -777,6 +801,8 @@ def build(hub: Any) -> list[Route]:
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
                           has_app_page=bool(row) and slug != HUB_SLUG,
+                          saved=bool(request.query_params.get("saved")),
+                          just_added=bool(request.query_params.get("new")),
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -832,6 +858,7 @@ def build(hub: Any) -> list[Route]:
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
                           has_app_page=bool(row) and slug != HUB_SLUG,
+                          saved=False, just_added=False,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
                                         and instance.config.get("registry_package")),
@@ -840,11 +867,15 @@ def build(hub: Any) -> list[Route]:
         # Give the plugin a chance to cache what it discovered (an upstream tool
         # catalogue, say) so that `build` never needs the network. A failure here
         # must not lose the user's edits, so it is folded in and ignored.
+        known = plugin.tool_names(instance) if instance else set()
         try:
             discovered = await plugin.on_save(proposed)
             config.update(discovered or {})
         except Exception:  # noqa: BLE001 - saving is the priority
             log.exception("on_save hook failed for backend %s", new_slug)
+        adopt_new_tools(config, known, plugin.tool_names(
+            BackendInstance(slug=new_slug, title=title, plugin_id=plugin.id,
+                            config=config, secrets=secret)))
 
         _save_backend(hub, slug=new_slug, plugin_id=plugin.id, title=title, enabled=enabled,
                       config=config, secrets=secret, row=row)
@@ -857,7 +888,14 @@ def build(hub: Any) -> list[Route]:
         if error:
             return render(request, "error.html",
                           message=f"Saved, but the backend could not be started: {error}", status_code=500)
-        return RedirectResponse("/", status_code=303)
+        # Back to this page rather than the list. Adding a backend is not one
+        # decision: the tools cannot be chosen until something has connected
+        # and read them, so the old redirect sent you to the dashboard to walk
+        # straight back in. `new` says the backend did not exist a moment ago,
+        # which is when there is most left to do.
+        return RedirectResponse(
+            f"/backends/{new_slug}?saved=1" + ("&new=1" if row is None else ""),
+            status_code=303)
 
     async def backend_app_form(request: Request) -> Response:
         """Everything about a backend as an *app*, kept off its MCP settings.
@@ -991,7 +1029,26 @@ def build(hub: Any) -> list[Route]:
                 for p in problems)})
 
         result = await plugin.check(instance)
-        return JSONResponse({"ok": result.ok, "detail": result.detail})
+        if not result.ok:
+            return JSONResponse({"ok": False, "detail": result.detail})
+
+        # Having just connected, read what is there and hand it back, so the
+        # choices a backend cannot offer until something has talked to it can
+        # be made now rather than after a save and a second visit.
+        choices: dict[str, list[dict[str, str]]] = {}
+        pickers = [f for f in on_page(plugin, existing, "mcp") if f.type == "multiselect"]
+        if pickers:
+            try:
+                instance = replace(instance, config={**instance.config,
+                                                     **(await plugin.on_save(instance) or {})})
+            except Exception:  # noqa: BLE001 - the check already passed; this is extra
+                log.info("backend %s: could not read its catalogue after a test", slug)
+            for field in pickers:
+                choices[field.key] = [
+                    {"value": o.value, "label": o.label, "help": o.help or ""}
+                    for o in await plugin.options(instance, field.key)
+                ]
+        return JSONResponse({"ok": result.ok, "detail": result.detail, "options": choices})
 
     async def backend_refresh(request: Request) -> Response:
         """Re-launch the backend and re-read what it offers.
@@ -1045,6 +1102,12 @@ def build(hub: Any) -> list[Route]:
             return JSONResponse({"ok": False, "detail": f"Refreshed, but could not restart: {error}"},
                                 status_code=500)
 
+        adopt_new_tools(config, was, now)
+        if config.get(ALLOW_KEY) != before.config.get(ALLOW_KEY):
+            _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
+                          enabled=bool(row["enabled"]), config=config,
+                          secrets=before.secrets, row=hub.backend_row(slug))
+
         added, removed = sorted(now - was), sorted(was - now)
         parts = []
         if new_version and new_version != old_version:
@@ -1052,7 +1115,8 @@ def build(hub: Any) -> list[Route]:
         elif new_version:
             parts.append(f"version {new_version}, unchanged")
         if added:
-            parts.append(f"{len(added)} new tool(s): {', '.join(added[:4])}"
+            adopted = " and exposed" if config.get(ADOPT_KEY) and config.get(ALLOW_KEY) else ""
+            parts.append(f"{len(added)} new tool(s) found{adopted}: {', '.join(added[:4])}"
                          + ("..." if len(added) > 4 else ""))
         if removed:
             parts.append(f"{len(removed)} tool(s) gone: {', '.join(removed[:4])}"

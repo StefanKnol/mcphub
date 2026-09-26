@@ -47,6 +47,8 @@ CATALOG_KEY = "tool_catalog"
 RESOURCE_CATALOG_KEY = "resource_catalog"
 PROMPT_CATALOG_KEY = "prompt_catalog"
 ALLOW_KEY = "tools"
+ADOPT_KEY = "tools_adopt_new"
+"""Whether a tool the upstream has gained joins the selection or stays hidden."""
 REGISTRY_ENV_KEY = "registry_env"
 """Cached declaration of the variables an upstream asks for, from its registry
 entry. Kept so the settings form can name them offline, rather than degrading
@@ -177,6 +179,13 @@ def _prompt_catalog(instance: BackendInstance) -> list[UpstreamPrompt]:
     except Exception:  # noqa: BLE001 - a stale cache must not break mounting
         log.warning("backend %s: prompt catalogue could not be read", instance.slug)
         return []
+
+
+def _as_options(tools: Sequence[UpstreamTool]) -> list[Option]:
+    return [
+        Option(value=t.name, label=t.name, help=(t.description or "").split("\n")[0][:140])
+        for t in sorted(tools, key=lambda t: t.name)
+    ]
 
 
 def _allowed(instance: BackendInstance) -> set[str] | None:
@@ -314,6 +323,17 @@ class McpProxyPlugin(PluginDefaults):
                 "Selecting none exposes everything the upstream offers, which for a large "
                 "server is a lot of context spent before you ask anything. Narrow it to what "
                 "you use."
+            ),
+        ),
+        ConfigField(
+            ADOPT_KEY, "Expose new tools automatically", type="bool", default=False,
+            required=False,
+            help=(
+                "When this server gains a tool — a new release, or an upstream that grew one "
+                "— add it to the selection above rather than leaving it hidden. Off by "
+                "default, because a narrowed list is usually narrowed on purpose and a "
+                "server that quietly gains reach is not what anyone asked for. It does "
+                "nothing while nothing is selected: that already means everything."
             ),
         ),
     )
@@ -559,8 +579,19 @@ class McpProxyPlugin(PluginDefaults):
         return {t.name for t in _catalog(instance)}
 
     async def options(self, instance: BackendInstance, key: str) -> Sequence[Option]:
+        """The tools to choose from, off the cached catalogue where there is one.
+
+        Every save and every refresh rewrites that cache, so it is what the
+        backend is actually running. Going to the network instead meant opening
+        the settings page launched the server again — seconds of waiting to
+        look at a form, and for a launched server a whole subprocess, every
+        time.
+        """
         if key != ALLOW_KEY:
             return ()
+        cached = _catalog(instance)
+        if cached:
+            return _as_options(cached)
         upstream = _upstream(instance)
         try:
             tools = await upstream.list_tools()
@@ -569,10 +600,7 @@ class McpProxyPlugin(PluginDefaults):
             return ()
         finally:
             await upstream.close()
-        return [
-            Option(value=t.name, label=t.name, help=(t.description or "").split("\n")[0][:140])
-            for t in sorted(tools, key=lambda t: t.name)
-        ]
+        return _as_options(tools)
 
     async def on_save(self, instance: BackendInstance) -> dict[str, Any]:
         """Cache the upstream's tool schemas so `build` can stay offline."""

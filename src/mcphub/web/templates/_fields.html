@@ -31,36 +31,45 @@
   {% elif item.field.type == "multiselect" %}
     <label>{{ item.field.label }}</label>
     {% if item.field.help %}<p class="help">{{ item.field.help }}</p>{% endif %}
-    {% if item.options %}
-      <div class="toolbar">
-        <button type="button" class="tiny" data-all="{{ item.field.key }}">Select all</button>
-        <button type="button" class="tiny" data-none="{{ item.field.key }}">Select none</button>
-        <input type="search" class="filter" data-for="{{ item.field.key }}" placeholder="Filter&hellip;">
-        <span class="note count" id="count-{{ item.field.key }}"></span>
+    {# Rendered even when empty, so a successful Test can fill it in place
+       rather than sending someone back here after a save. #}
+    <div class="toolbar" data-toolbar="{{ item.field.key }}" {% if not item.options %}hidden{% endif %}>
+      <button type="button" class="tiny" data-all="{{ item.field.key }}">Select all</button>
+      <button type="button" class="tiny" data-none="{{ item.field.key }}">Select none</button>
+      <input type="search" class="filter" data-for="{{ item.field.key }}" placeholder="Filter&hellip;">
+      <span class="note count" id="count-{{ item.field.key }}"></span>
+    </div>
+    <div class="picker" data-group="{{ item.field.key }}"
+         data-selected="{{ item.selected|join(' ') }}" {% if not item.options %}hidden{% endif %}>
+      {% for opt in item.options %}
+      <div class="pick" data-label="{{ opt.value }} {{ opt.help }}">
+        <input type="checkbox" id="o-{{ item.field.key }}-{{ loop.index }}"
+               name="{{ item.field.key }}" value="{{ opt.value }}"
+               {% if opt.value in item.selected %}checked{% endif %}>
+        <label for="o-{{ item.field.key }}-{{ loop.index }}">
+          <span class="mono">{{ opt.label }}</span>
+          {% if opt.help %}<span class="note"> — {{ opt.help }}</span>{% endif %}
+        </label>
       </div>
-      <div class="picker" data-group="{{ item.field.key }}">
-        {% for opt in item.options %}
-        <div class="pick" data-label="{{ opt.value }} {{ opt.help }}">
-          <input type="checkbox" id="o-{{ item.field.key }}-{{ loop.index }}"
-                 name="{{ item.field.key }}" value="{{ opt.value }}"
-                 {% if opt.value in item.selected %}checked{% endif %}>
-          <label for="o-{{ item.field.key }}-{{ loop.index }}">
-            <span class="mono">{{ opt.label }}</span>
-            {% if opt.help %}<span class="note"> — {{ opt.help }}</span>{% endif %}
-          </label>
-        </div>
-        {% endfor %}
-      </div>
-    {% else %}
-      <p class="help">
-        {% if not row %}Save this backend first, then come back to choose which tools to expose.
-        {% else %}Could not reach the upstream server to list its tools. Fix the connection and reload.{% endif %}
-      </p>
-      {% for value in item.selected %}
-        <input type="hidden" name="{{ item.field.key }}" value="{{ value }}">
       {% endfor %}
-      {% if item.selected %}<p class="help">Keeping {{ item.selected|length }} previously selected tool(s).</p>{% endif %}
-    {% endif %}
+    </div>
+    <p class="help" data-empty="{{ item.field.key }}" {% if item.options %}hidden{% endif %}>
+      {% if not row %}Nothing has connected to this server yet. Press <strong>Test</strong> and
+        its tools will be listed here to choose from.
+      {% else %}Could not reach the upstream server to list its tools. Fix the connection and
+        press <strong>Test</strong>.{% endif %}
+    </p>
+    {# Only while there is nothing to tick: a selection with no boxes to carry
+       it would be thrown away by the next save. #}
+    <div data-holds="{{ item.field.key }}">
+      {% if not item.options %}
+        {% for value in item.selected %}
+          <input type="hidden" name="{{ item.field.key }}" value="{{ value }}">
+        {% endfor %}
+        {% if item.selected %}<p class="help">Keeping {{ item.selected|length }} previously
+          selected tool(s).</p>{% endif %}
+      {% endif %}
+    </div>
   {% elif item.field.type == "textarea" %}
     <label for="f-{{ item.field.key }}">{{ item.field.label }}{% if not item.field.required %}
       <span class="note" style="font-weight:400">(optional)</span>{% endif %}</label>

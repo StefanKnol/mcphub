@@ -16,6 +16,12 @@
 
 {% if errors %}<div class="errors">
   {% for e in errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+{% if saved %}<div class="card saved">
+  {% if just_added %}Added and started.{% else %}Saved.{% endif %}
+  {% if just_added %}Its tools are listed below — choose which to expose, and see the
+    <a href="/backends/{{ slug }}/app">App</a> tab for a web interface, storage and what
+    else on this hub it may use.{% else %}<a href="/">Back to backends</a>.{% endif %}
+</div>{% endif %}
 
 <form method="post" class="card validated">
   <input type="hidden" name="plugin_id" value="{{ plugin.id }}">
@@ -103,8 +109,12 @@ document.querySelectorAll("button.test-typed").forEach(function (btn) {
         body: new URLSearchParams(new FormData(form)),
       });
       var data = await res.json();
+      var filled = 0;
+      Object.keys(data.options || {}).forEach(function (key) {
+        filled += fillPicker(key, data.options[key]);
+      });
       out.className = "result " + (data.ok ? "ok" : "bad");
-      out.textContent = data.detail;
+      out.textContent = data.detail + (filled ? " \u2014 listed below to choose from." : "");
     } catch (err) {
       out.className = "result bad";
       out.textContent = "Test failed: " + err;
@@ -118,7 +128,7 @@ document.querySelectorAll("button.test-typed").forEach(function (btn) {
 // toolbar, no counter and nothing to filter. Without this guard the first such
 // picker on the page threw, and everything after it in this script — including
 // the version selector — never ran.
-document.querySelectorAll(".picker[data-group]").forEach(function (picker) {
+function wirePicker(picker) {
   var group = picker.dataset.group;
   var boxes = picker.querySelectorAll("input[type=checkbox]");
   var count = document.getElementById("count-" + group);
@@ -151,7 +161,66 @@ document.querySelectorAll(".picker[data-group]").forEach(function (picker) {
       row.hidden = q !== "" && row.dataset.label.toLowerCase().indexOf(q) === -1;
     });
   });
-});
+}
+document.querySelectorAll(".picker[data-group]").forEach(wirePicker);
+
+// Fill a picker from what a Test just read off the server. Choices a backend
+// cannot offer until something has connected to it are the reason adding one
+// used to take two visits.
+function fillPicker(key, options) {
+  var picker = document.querySelector('.picker[data-group="' + key + '"]');
+  if (!picker || !options) return 0;
+  // Whatever is ticked now wins over what was ticked when the page loaded:
+  // the second Test on a page should not undo a choice made after the first.
+  var chosen = new Set();
+  picker.querySelectorAll("input[type=checkbox]:checked").forEach(function (b) {
+    chosen.add(b.value);
+  });
+  if (!picker.querySelector("input")) {
+    (picker.dataset.selected || "").split(" ").filter(Boolean).forEach(function (v) {
+      chosen.add(v);
+    });
+  }
+
+  picker.replaceChildren();
+  options.forEach(function (opt, i) {
+    var row = document.createElement("div");
+    row.className = "pick";
+    row.dataset.label = opt.value + " " + (opt.help || "");
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "o-" + key + "-live-" + i;
+    box.name = key;
+    box.value = opt.value;
+    box.checked = chosen.has(opt.value);
+    var label = document.createElement("label");
+    label.htmlFor = box.id;
+    var name = document.createElement("span");
+    name.className = "mono";
+    name.textContent = opt.label;
+    label.append(name);
+    if (opt.help) {
+      var note = document.createElement("span");
+      note.className = "note";
+      note.textContent = " \u2014 " + opt.help;
+      label.append(note);
+    }
+    row.append(box, label);
+    picker.append(row);
+  });
+
+  var toolbar = document.querySelector('[data-toolbar="' + key + '"]');
+  var empty = document.querySelector('[data-empty="' + key + '"]');
+  var holder = document.querySelector('[data-holds="' + key + '"]');
+  picker.hidden = options.length === 0;
+  if (toolbar) toolbar.hidden = options.length === 0;
+  if (empty) empty.hidden = options.length !== 0;
+  // The hidden inputs carried the selection while there was nothing to tick.
+  // Leaving them would submit every name twice, once tickable and once not.
+  if (holder && options.length) holder.replaceChildren();
+  wirePicker(picker);
+  return options.length;
+}
 
 document.querySelectorAll("select.version").forEach(async function (select) {
   var slug = select.dataset.slug;
