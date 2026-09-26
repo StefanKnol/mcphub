@@ -77,6 +77,13 @@ plugin stays small. Override these when you need them:
 | `on_save` / `on_delete` | Provision and release whatever the backend needs elsewhere |
 | `review_before_enable` | Create new backends disabled, for tool surfaces from elsewhere |
 
+`ConfigField` also carries `affects_connection`. The settings page turns its
+Test button into Save once a test passes and back to Test when something the
+connection depends on changes, and this is what it reads. The default — `True`
+for everything except a `multiselect`, whose choices came *from* a connection —
+is right for most fields; set it to `False` on one that plainly cannot affect
+reaching the backend, or your users will be asked to re-test for nothing.
+
 Two rules worth stating:
 
 - **Mark secrets `secret=True`.** They are sealed with the hub's key and never

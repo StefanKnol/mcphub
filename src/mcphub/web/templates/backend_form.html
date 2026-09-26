@@ -82,11 +82,16 @@
     <p class="help">Disabling takes the endpoint down without deleting the configuration.</p>
   </div>
 
+  {# One button, because Test and Save are the same step in sequence rather #}
+  {# than a choice. It starts on Test for a backend nothing has connected to #}
+  {# yet, on Save for one that is already running, and goes back to Test the #}
+  {# moment a field the connection depends on is touched. `Save untested` is #}
+  {# beside it throughout, so nothing is ever a dead end.                    #}
   <div class="actions">
-    <button class="primary" type="submit">Save</button>
-    {# Tests what is in the boxes, not what is stored. On a new backend there #}
-    {# is nothing stored to test, which is exactly when it is most useful.    #}
-    <button type="button" class="test-typed" data-slug="{{ original_slug }}">Test</button>
+    <button class="primary" id="go" type="{% if row %}submit{% else %}button{% endif %}"
+            data-slug="{{ original_slug }}">{% if row %}Save{% else %}Test{% endif %}</button>
+    <button type="submit" id="save-anyway" class="quiet"
+            {% if row %}hidden{% endif %}>Save untested</button>
     <a class="btn" href="/">Cancel</a>
     <span class="result" id="test-result"></span>
   </div>
@@ -96,15 +101,51 @@
 // Test what is typed. The whole form goes up, including a secret left blank to
 // keep its stored value — the server merges that back in the same way a save
 // does, so what is tested is what saving would store.
-document.querySelectorAll("button.test-typed").forEach(function (btn) {
-  var form = btn.closest("form");
+(function () {
+  var go = document.getElementById("go");
+  if (!go) return;
+  var form = go.closest("form");
+  var anyway = document.getElementById("save-anyway");
   var out = document.getElementById("test-result");
-  btn.addEventListener("click", async function () {
-    btn.disabled = true;
+
+  // Everything the connection depends on, as the fields themselves declare.
+  // Picking tools is not part of it: those choices came *from* a connection,
+  // so making one cannot invalidate it.
+  function connectionFields() {
+    return form.querySelectorAll("[data-connects] input, [data-connects] textarea, [data-connects] select");
+  }
+  function signature() {
+    var parts = [];
+    connectionFields().forEach(function (field) {
+      parts.push(field.name + "=" + (field.type === "checkbox" ? field.checked : field.value));
+    });
+    return parts.join("\u0000");
+  }
+
+  // Empty on a new backend, so anything typed counts as a change; on a saved
+  // one it is whatever is in the boxes, which is what is already running.
+  var proven = {% if row %}signature(){% else %}null{% endif %};
+
+  function mode() {
+    var tested = proven !== null && proven === signature();
+    go.textContent = tested ? "Save" : "Test";
+    go.type = tested ? "submit" : "button";
+    anyway.hidden = tested;
+  }
+  mode();
+
+  form.addEventListener("input", mode);
+  form.addEventListener("change", mode);
+
+  go.addEventListener("click", async function (event) {
+    if (go.type === "submit") return;   // it is a Save; let the form have it
+    event.preventDefault();
+    go.disabled = true;
     out.className = "result";
     out.textContent = "Testing\u2026";
+    var attempted = signature();
     try {
-      var res = await fetch("/backends/" + encodeURIComponent(btn.dataset.slug) + "/test", {
+      var res = await fetch("/backends/" + encodeURIComponent(go.dataset.slug) + "/test", {
         method: "POST",
         body: new URLSearchParams(new FormData(form)),
       });
@@ -113,16 +154,21 @@ document.querySelectorAll("button.test-typed").forEach(function (btn) {
       Object.keys(data.options || {}).forEach(function (key) {
         filled += fillPicker(key, data.options[key]);
       });
+      // What was tested, not what is in the boxes now: filling the picker
+      // touches the form, and a field edited while it ran was never tried.
+      if (data.ok) proven = attempted;
       out.className = "result " + (data.ok ? "ok" : "bad");
-      out.textContent = data.detail + (filled ? " \u2014 listed below to choose from." : "");
+      out.textContent = data.detail
+        + (data.ok ? (filled ? " \u2014 choose below, then Save." : " \u2014 Save when ready.") : "");
     } catch (err) {
       out.className = "result bad";
       out.textContent = "Test failed: " + err;
     } finally {
-      btn.disabled = false;
+      go.disabled = false;
+      mode();
     }
   });
-});
+})();
 
 // Only a picker that belongs to a multiselect field: a plain one has no
 // toolbar, no counter and nothing to filter. Without this guard the first such

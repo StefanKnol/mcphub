@@ -7,6 +7,7 @@
 {% endif %}
 {# Single-quoted because tojson emits double quotes and escapes apostrophes. #}
 <div class="field" data-field-key="{{ item.field.key }}"
+     {% if item.field.probes %}data-connects="1"{% endif %}
      {% if item.field.group %}data-group="{{ item.field.group }}"{% endif %}
      {% if item.field.show_if %}data-show-if-field="{{ item.field.show_if[0] }}"
      data-show-if-value='{{ item.wanted|tojson }}'{% endif %}>

@@ -33,11 +33,17 @@ configured on two pages: **MCP server** for how the hub reaches it, and **App**
 for what it is besides — its web interface, its storage, and what else on this
 hub it may use.
 
-Adding one is a single sitting. **Test** connects with what is typed and lists
-the tools it found, so they can be chosen before anything is saved, and saving
-leaves you on the page rather than back at the list. **Expose new tools
-automatically** decides what happens later, when the server gains one: off by
-default, because a narrowed list is usually narrowed on purpose.
+Adding one is a single sitting. One button carries it: **Test** connects with
+what is typed and lists the tools it found, then becomes **Save** — and goes
+back to **Test** the moment a field the connection depends on is touched.
+Picking tools does not count; changing a URL, a command or an environment does.
+**Save untested** sits beside it throughout, because a server that is simply
+not up yet should not be a form you cannot leave. Saving stays on the page
+rather than returning to the list.
+
+**Expose new tools automatically** decides what happens later, when the server
+gains one: off by default, because a narrowed list is usually narrowed on
+purpose.
 
 **A backend for the hub itself.** Every hub has `mcphub`, built in and
 reserved: the documentation below about building apps for it, and tools for

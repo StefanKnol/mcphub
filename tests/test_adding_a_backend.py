@@ -226,3 +226,73 @@ def test_nothing_is_added_twice():
     config = {ADOPT_KEY: True, ALLOW_KEY: ["a", "b"]}
     adopt_new_tools(config, {"a"}, {"a", "b"})
     assert config[ALLOW_KEY] == ["a", "b"]
+
+
+# ── which fields a test depends on ────────────────────────────────────────
+
+def test_a_field_is_assumed_to_matter_unless_it_says_otherwise():
+    """The safe way round. A field that quietly leaves a stale pass behind is
+    how someone saves a URL that was never tried, believing it was."""
+    assert ConfigField("host", "Host").probes is True
+
+
+def test_choosing_among_what_a_connection_returned_cannot_invalidate_it():
+    assert ConfigField("tools", "Tools", type="multiselect").probes is False
+
+
+@pytest.mark.parametrize("declared,expected", [(True, True), (False, False)])
+def test_a_plugin_can_say_either_way(declared, expected):
+    assert ConfigField("k", "K", affects_connection=declared).probes is expected
+
+
+def test_the_proxys_connection_settings_all_count():
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN
+
+    probing = {f.key for f in PLUGIN.fields if f.page == "mcp" and f.probes}
+    assert {"connection", "command", "env", "url", "auth_header", "auth_value",
+            "verify_tls", "timeout"} <= probing
+
+
+def test_and_choosing_tools_does_not():
+    from mcphub.plugins.builtin.mcpproxy import PLUGIN
+
+    for key in (ALLOW_KEY, ADOPT_KEY):
+        assert next(f for f in PLUGIN.fields if f.key == key).probes is False
+
+
+async def test_the_form_marks_them_for_the_page(hub):
+    """The button goes back to Test off these markers, so a field that stops
+    carrying one stops invalidating anything and nothing says so."""
+    _, browser = hub
+    page = (await browser.get("/backends/new?plugin=countable")).text
+    assert 'data-field-key="host"' in page
+    connects = page.split('data-field-key="host"')[1].split(">")[0]
+    assert "data-connects" in connects
+
+    tools = page.split(f'data-field-key="{ALLOW_KEY}"')[1].split(">")[0]
+    assert "data-connects" not in tools
+
+
+async def test_a_new_backend_starts_on_test(hub):
+    _, browser = hub
+    page = (await browser.get("/backends/new?plugin=countable")).text
+    assert ">Test</button>" in page
+    assert "Save untested" in page
+
+
+async def test_one_that_is_already_running_starts_on_save(hub):
+    """Its connection is known good; asking for a test to change its title
+    would be asking for a round trip to prove something nothing touched."""
+    _, browser = hub
+    await browser.post("/backends/new", data=typed(enabled="on"))
+    page = (await browser.get("/backends/timeserver")).text
+    assert '>Save</button>' in page
+
+
+async def test_saving_untested_is_always_available(hub):
+    """A form that can only be saved by connecting is a trap when the thing at
+    the other end is simply not up yet."""
+    state, browser = hub
+    done = await browser.post("/backends/new", data=typed(slug="offline", host=""))
+    assert done.status_code == 303
+    assert state.backend_row("offline") is not None

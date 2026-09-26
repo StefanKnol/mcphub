@@ -14,8 +14,10 @@ tools to an account before anyone has looked at what they are. Open it, read the
 tool list, tick what you want exposed, then enable it.
 
 Adding one by hand is the same in one sitting: fill the form, press **Test**,
-and the tools it finds are listed there to choose from before anything is saved.
-Saving leaves you on the settings page with them still in front of you.
+and the tools it finds are listed there to choose from before anything is
+saved. The button then reads **Save**, and goes back to **Test** if you change
+something the connection depends on. Saving leaves you on the settings page
+with the tools still in front of you.
 
 ## 2. A server you run yourself
 

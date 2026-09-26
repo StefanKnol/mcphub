@@ -80,6 +80,9 @@
   .result.ok { color:var(--ok); } .result.bad { color:var(--bad); }
   .toolbar { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
   button.tiny { padding:3px 9px; font-size:12px; font-weight:500; }
+  button.quiet { background:none; border:none; color:var(--muted); text-decoration:underline;
+                 padding:9px 4px; }
+  button.quiet:hover { color:var(--ink); }
   .filter { flex:1 1 160px; padding:5px 9px; font-size:13px; }
   .picker { max-height:340px; overflow-y:auto; border:1px solid var(--line);
             border-radius:8px; padding:6px 10px; background:var(--bg); }

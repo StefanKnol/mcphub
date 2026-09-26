@@ -327,7 +327,7 @@ class McpProxyPlugin(PluginDefaults):
         ),
         ConfigField(
             ADOPT_KEY, "Expose new tools automatically", type="bool", default=False,
-            required=False,
+            required=False, affects_connection=False,
             help=(
                 "When this server gains a tool — a new release, or an upstream that grew one "
                 "— add it to the selection above rather than leaving it hidden. Off by "

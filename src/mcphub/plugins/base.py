@@ -126,6 +126,16 @@ class ConfigField:
     interfaces a router actually has, the databases a server actually holds —
     which a literal list cannot express."""
 
+    affects_connection: bool | None = None
+    """Whether changing this field makes a previous connection test stale.
+
+    `None` resolves by type: a `multiselect` does not (its choices came *from*
+    a connection, so picking among them cannot invalidate one), everything else
+    does. Defaulting the unknown case to "yes" is the safe way round — a field
+    that quietly leaves a stale pass behind is how someone saves a URL that was
+    never tried, believing it was.
+    """
+
     page: str = "mcp"
     """Which settings page this field belongs on: "mcp" or "app".
 
@@ -152,6 +162,13 @@ class ConfigField:
         forgetting to fill it in, which is a defect the validator catches.
         """
         return self.type == "multiselect" or self.choices_from_plugin
+
+    @property
+    def probes(self) -> bool:
+        """Resolve `affects_connection` against the field's type."""
+        if self.affects_connection is None:
+            return self.type != "multiselect"
+        return self.affects_connection
 
     @property
     def shows_value(self) -> bool:
