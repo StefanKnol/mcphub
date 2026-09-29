@@ -1090,32 +1090,44 @@ def build(hub: Any) -> list[Route]:
                                 status_code=502)
 
         config = {**before.config, **discovered}
+        # `replace`, not a fresh instance: a backend also carries its granted
+        # peers and its storage directory, and a plugin's `tool_names` is
+        # entitled to look at either.
+        now = plugin.tool_names(replace(before, config=config))
+        new_version = config.get("upstream_version") or ""
+        added, removed = sorted(now - was), sorted(was - now)
+
+        # Settle the whole selection before anything is written. Adopting after
+        # the remount wrote the widened list to the database and left the
+        # running endpoint built from the old one, so Update reported a tool as
+        # exposed while the server went on not serving it until the next save.
+        adopt_new_tools(config, was, now)
+        # Tools the upstream no longer has would otherwise sit in the allowlist
+        # forever, and reappear if it ever brings them back.
+        if removed and isinstance(config.get(ALLOW_KEY), list):
+            config[ALLOW_KEY] = [t for t in config[ALLOW_KEY] if t in now]
+
         _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
                       enabled=bool(row["enabled"]), config=config, secrets=before.secrets, row=row)
 
-        after = hub.instance_from_row(hub.backend_row(slug))
-        now = plugin.tool_names(after)
-        new_version = config.get("upstream_version") or ""
-
+        # One remount, after the last of it, so what is running is what was
+        # just saved rather than an earlier draft of it.
         error = await hub.remount(slug)
         if error:
             return JSONResponse({"ok": False, "detail": f"Refreshed, but could not restart: {error}"},
                                 status_code=500)
 
-        adopt_new_tools(config, was, now)
-        if config.get(ALLOW_KEY) != before.config.get(ALLOW_KEY):
-            _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
-                          enabled=bool(row["enabled"]), config=config,
-                          secrets=before.secrets, row=hub.backend_row(slug))
-
-        added, removed = sorted(now - was), sorted(was - now)
         parts = []
         if new_version and new_version != old_version:
             parts.append(f"updated {old_version or '?'} -> {new_version}")
         elif new_version:
             parts.append(f"version {new_version}, unchanged")
         if added:
-            adopted = " and exposed" if config.get(ADOPT_KEY) and config.get(ALLOW_KEY) else ""
+            # Reports what was actually done, not what the setting asks for: a
+            # selection that is empty already exposes everything, so there was
+            # nothing to adopt into.
+            exposed = sorted(set(config.get(ALLOW_KEY) or ()) & set(added))
+            adopted = " and exposed" if exposed else ""
             parts.append(f"{len(added)} new tool(s) found{adopted}: {', '.join(added[:4])}"
                          + ("..." if len(added) > 4 else ""))
         if removed:
@@ -1123,17 +1135,6 @@ def build(hub: Any) -> list[Route]:
                          + ("..." if len(removed) > 4 else ""))
         if not parts:
             parts.append(f"nothing changed ({len(now)} tools)")
-
-        # Tools the upstream no longer has would otherwise sit in the allowlist
-        # forever, and reappear if it ever brings them back.
-        if removed and isinstance(config.get("tools"), list):
-            kept = [t for t in config["tools"] if t in now]
-            if kept != config["tools"]:
-                config["tools"] = kept
-                _save_backend(hub, slug=slug, plugin_id=row["plugin_id"], title=row["title"],
-                              enabled=bool(row["enabled"]), config=config,
-                              secrets=before.secrets, row=hub.backend_row(slug))
-                await hub.remount(slug)
 
         return JSONResponse({"ok": True, "detail": "; ".join(parts)})
 
