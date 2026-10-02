@@ -1,10 +1,12 @@
 /* mcphub's look: the design tokens, the base element styles and the components every
    hub page uses. Served at /static/hub.css and linked by every hub page and by every
    plugin's own interface, so a plugin page inherits the palette, the type and the
-   focus ring without defining colours of its own. Light and dark follow the system. */
+   focus ring without defining colours of its own. Light and dark follow the system.
+   Every text token reads at WCAG AA (4.5:1) on both --bg and --panel in both schemes, and
+   --panel reads so on --accent; tests/test_templates.py measures it. */
   :root {
     --bg: #f6f7f9; --panel: #fff; --ink: #14171a; --muted: #5b6570;
-    --line: #dfe3e8; --accent: #1f6feb; --ok: #1a7f46; --bad: #b3261e;
+    --line: #dfe3e8; --accent: #1b64d8; --ok: #1a7f46; --bad: #b3261e;
     --radius: 10px;
   }
   @media (prefers-color-scheme: dark) {
@@ -49,7 +51,7 @@
     font:inherit; font-weight:600; padding:9px 15px; border-radius:8px; cursor:pointer;
     border:1px solid var(--line); background:var(--panel); color:var(--ink); text-decoration:none;
     display:inline-block; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--panel); }
   button.danger { color:var(--bad); border-color:var(--bad); background:transparent; }
   .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; }
   .pill { font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }

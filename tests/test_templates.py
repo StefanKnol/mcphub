@@ -115,3 +115,60 @@ def test_the_look_lives_in_one_served_stylesheet():
     for token in ("--bg", "--panel", "--ink", "--muted", "--line", "--accent", "--ok", "--bad", "--radius"):
         assert f"{token}:" in css, f"{token} is a token plugin interfaces rely on"
     assert "prefers-color-scheme: dark" in css
+
+
+# ── the tokens read at WCAG AA on the surfaces they are drawn on ──────────────
+# Found by the mcphub-files plugin's browser contrast test: the light accent read 4.32:1
+# on --bg, under the 4.5:1 that WCAG AA asks of body text, so every link on a page
+# background failed by a hair; and `button.primary` drew #fff on the dark scheme's
+# light-blue accent at 2.78:1. Measured here in Python, without a browser, so a token
+# change fails on the spot.
+
+TOKEN = re.compile(r"--(bg|panel|ink|muted|line|accent|ok|bad):\s*([^;}]+)")
+
+
+def colour_tokens() -> dict[str, dict[str, str]]:
+    css = STYLESHEET.read_text()
+    dark_at = css.index("prefers-color-scheme: dark")
+    schemes: dict[str, dict[str, str]] = {"light": {}, "dark": {}}
+    for match in TOKEN.finditer(css):
+        scheme = "dark" if match.start() > dark_at else "light"
+        schemes[scheme].setdefault(match.group(1), match.group(2).strip())
+    return schemes
+
+
+def relative_luminance(colour: str) -> float:
+    digits = colour.lstrip("#")
+    if len(digits) == 3:
+        digits = "".join(d * 2 for d in digits)
+    channels = [int(digits[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast(a: str, b: str) -> float:
+    high, low = sorted((relative_luminance(a), relative_luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_text_tokens_meet_aa_contrast_on_both_surfaces(scheme):
+    tokens = colour_tokens()[scheme]
+    assert set(tokens) == {"bg", "panel", "ink", "muted", "line", "accent", "ok", "bad"}
+    short = []
+    for text in ("ink", "muted", "accent", "ok", "bad"):
+        for surface in ("bg", "panel"):
+            ratio = contrast(tokens[text], tokens[surface])
+            if ratio < 4.5:
+                short.append(f"--{text} on --{surface}: {ratio:.2f}")
+    if contrast(tokens["panel"], tokens["accent"]) < 4.5:
+        short.append(f"--panel on --accent (the primary button's text): {contrast(tokens['panel'], tokens['accent']):.2f}")
+    assert not short, f"{scheme} scheme, below WCAG AA 4.5:1: {short}"
+
+
+def test_the_primary_button_text_is_a_token():
+    """`#fff` is right on the light accent and 2.78:1 on the dark one; --panel is #fff in
+    light and the dark surface colour in dark, and reads at AA on both accents."""
+    css = STYLESHEET.read_text()
+    assert re.search(r"button\.primary\s*\{[^}]*color:\s*var\(--panel\)", css)
+    assert not re.search(r"button\.primary\s*\{[^}]*#fff", css)
