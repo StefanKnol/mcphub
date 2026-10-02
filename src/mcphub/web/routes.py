@@ -7,6 +7,7 @@ here, and takes effect immediately without restarting anything.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ from starlette.websockets import WebSocket
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.templating import Jinja2Templates
+from starlette.types import Receive, Scope, Send
 
 from ..crypto import hash_password, hash_token, new_password, verify_password
 from ..db import utcnow
@@ -33,6 +35,7 @@ from ..plugins.builtin.hub.prompts import NAME as PROMPT_NAME
 from ..plugins.builtin.hub.prompts import integration_prompt
 from ..plugins.base import (
     CLEAR_PREFIX,
+    WEB_IDENTITY_KEY,
     BackendInstance,
     ConfigField,
     FieldError,
@@ -50,6 +53,13 @@ from .uiproxy import is_proxyable
 log = logging.getLogger(__name__)
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+HUB_STYLESHEET = Path(__file__).parent / "static" / "hub.css"
+"""The hub's tokens and component styles, served at /static/hub.css for its own
+pages and for every plugin interface (which must not define colours of its own)."""
+HUB_STYLESHEET_VERSION = hashlib.sha256(HUB_STYLESHEET.read_bytes()).hexdigest()[:12]
+"""Content hash, so a page links `/static/hub.css?v=<hash>` and a browser keeps a
+copy for a year without ever showing yesterday's stylesheet after an upgrade."""
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 
 NEW_BACKEND = "new"
@@ -506,6 +516,7 @@ def build(hub: Any) -> list[Route]:
                 # Every page's navigation needs it, so it is part of the base
                 # context rather than something each handler remembers to pass.
                 "is_admin": bool(row and row["is_admin"]),
+                "hub_css_version": HUB_STYLESHEET_VERSION,
                 **context,
             },
             status_code=status_code,
@@ -575,6 +586,35 @@ def build(hub: Any) -> list[Route]:
 
     def redirect_to_login(request: Request) -> Response:
         return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
+
+    def signed_out(request: Request) -> Response:
+        """What a request without a session gets on a backend's interface.
+
+        A navigation is sent to the login page as everywhere else. A script's
+        request is not: a fetch that follows a 303 lands on the login page's
+        HTML with a 200, which the script cannot act on, and an editor would
+        lose a draft that way. The browser marks every fetch itself with
+        `Sec-Fetch-Mode` (anything but `navigate`), so those get a 401 the
+        script can read. A request without the header, an old browser or a
+        command-line client, is treated as the navigation it most likely is.
+        """
+        mode = request.headers.get("sec-fetch-mode", "")
+        if mode and mode != "navigate":
+            return JSONResponse({"error": "session_expired", "login": "/login"}, status_code=401,
+                                headers={"cache-control": "no-store"})
+        return redirect_to_login(request)
+
+    async def hub_stylesheet(request: Request) -> Response:
+        """The shared stylesheet, cacheable for a year under its content hash."""
+        body = HUB_STYLESHEET.read_bytes()
+        etag = f'"{HUB_STYLESHEET_VERSION}"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"etag": etag})
+        # Linked with ?v=<hash>: immutable. Linked bare (a plugin page that
+        # does not know the hash): revalidated with the ETag, one cheap 304.
+        versioned = request.query_params.get("v") == HUB_STYLESHEET_VERSION
+        cache = "public, max-age=31536000, immutable" if versioned else "public, max-age=0, must-revalidate"
+        return Response(body, media_type="text/css", headers={"etag": etag, "cache-control": cache})
 
     # ── authentication ────────────────────────────────────────────────────
 
@@ -1461,6 +1501,54 @@ def build(hub: Any) -> list[Route]:
         return await proxy_ui(request, target, f"/ui/{slug}/",
                               trusted=trusted, identity=identity)
 
+    class BackendInterface:
+        """The ASGI endpoint behind `/ui/{slug}` and `/ui/{slug}/{path}`.
+
+        One gate for both ways an interface can be served: the session check
+        and the grant check run here, then a backend whose plugin provides its
+        own app (`Plugin.web_app`) gets the request handed over in-process,
+        with who is asking on the scope; any other backend goes through the
+        proxy exactly as before.
+
+        An ASGI endpoint rather than a request handler because handing over
+        means calling another application with the raw scope, which a
+        `Response` cannot carry. The hub already does the same for `/mcp/{slug}`.
+        """
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            request = Request(scope, receive, send)
+            slug = request.path_params["slug"]
+            user = require_user(request)
+            if not user:
+                await signed_out(request)(scope, receive, send)
+                return
+            if not may_use(user, slug):
+                await denied(request, "This account has not been granted access to that backend.")(
+                    scope, receive, send)
+                return
+            web_app = hub.mounts.web_app_for(slug) if hub.mounts is not None else None
+            if web_app is None:
+                response = await backend_ui(request)
+                await response(scope, receive, send)
+                return
+            prefix = f"/ui/{slug}"
+            forwarded = dict(scope)
+            # Starlette routes a sub-application by the path beyond root_path,
+            # so the full path stays and the mount is added to root_path — the
+            # same thing Mount does, and what lets the app build its own URLs.
+            forwarded["root_path"] = scope.get("root_path", "") + prefix
+            forwarded[WEB_IDENTITY_KEY] = {
+                "user": str(user["username"]),
+                "admin": is_admin(user),
+                # Told, not enforced: over HTTP the hub cannot know what a POST
+                # means, so the app decides what each level may do.
+                "role": level_for(user, slug),
+                "prefix": prefix,
+                "csrf_token": csrf_token(request),
+                "public_url": hub.settings.public_url,
+            }
+            await web_app(forwarded, receive, send)
+
     async def backend_ui_check(request: Request) -> Response:
         """Report what would stop a backend's interface working through the hub."""
         user = require_user(request)
@@ -1767,9 +1855,11 @@ def build(hub: Any) -> list[Route]:
         WebSocketRoute("/ui/{slug}/{path:path}", backend_ui_socket),
         WebSocketRoute("/ui/{slug}/", backend_ui_socket),
         Route("/ui/{slug}", backend_ui_root),
-        Route("/ui/{slug}/", backend_ui, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
-        Route("/ui/{slug}/{path:path}", backend_ui,
+        Route("/ui/{slug}/", BackendInterface(),
               methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
+        Route("/ui/{slug}/{path:path}", BackendInterface(),
+              methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
+        Route("/static/hub.css", hub_stylesheet),
     ]
 
 

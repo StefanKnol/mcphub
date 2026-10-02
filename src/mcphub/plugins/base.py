@@ -366,6 +366,28 @@ class Plugin(Protocol):
         """
         ...
 
+    def web_app(self, instance: BackendInstance) -> Any | None:
+        """An ASGI application for this backend's own browser interface, or None.
+
+        The hub serves it at `/ui/<slug>/` itself, with no proxy in between,
+        behind its own sign-in and the same per-account grant as the MCP
+        endpoint. Called once, at mount time, with the same instance `build`
+        receives (the storage path included), so the two can share state.
+
+        Every request the app sees carries `scope[WEB_IDENTITY_KEY]`, a dict:
+        `user` (the account's username), `admin` (bool), `role` (the account's
+        level on this backend: viewer, user or admin), `prefix` (where the app
+        is mounted, `/ui/<slug>`), `csrf_token` (the session's token, to put in
+        forms and compare on mutating requests) and `public_url` (the hub's own
+        address, for an Origin check). The hub can enforce a level over MCP,
+        where tools say what they do; over HTTP a POST is just a POST, so the
+        app is told the level and decides what it means.
+
+        Like `build`, this must not perform network I/O: a raised exception is
+        logged and the backend mounts without its interface.
+        """
+        ...
+
     review_before_enable: bool
     """Create new backends of this kind disabled.
 
@@ -419,12 +441,19 @@ class PluginDefaults:
     def tool_names(self, instance: BackendInstance) -> set[str]:
         return set()
 
+    def web_app(self, instance: BackendInstance) -> Any | None:
+        return None
+
+
+WEB_IDENTITY_KEY = "mcphub.identity"
+"""Where a plugin's web app finds who is asking: see `Plugin.web_app`."""
+
 
 REQUIRED_ATTRIBUTES = ("id", "name", "description", "fields", "build", "check")
 """What a plugin must supply itself. There is no default for any of these."""
 
 OPTIONAL_ATTRIBUTES = ("fields_for", "options", "on_save", "on_delete", "validate",
-                       "variant", "tool_names", "review_before_enable")
+                       "variant", "tool_names", "review_before_enable", "web_app")
 """Hooks the hub calls unconditionally, and `PluginDefaults` answers for free.
 
 They are optional to *write*, not optional to *have*: mix in `PluginDefaults`

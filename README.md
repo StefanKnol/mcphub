@@ -186,6 +186,27 @@ The cost is symmetrical: an opaque origin has no cookies, so an interface with
 its own login cannot authenticate through here. For one with no login — the
 case this exists for — that costs nothing.
 
+#### A plugin's own interface
+
+A plugin can also bring the interface itself, as an ASGI application, by
+answering `web_app(instance)`. The hub mounts it at `/ui/<name>/` with no proxy
+in between, behind the same sign-in and the same grant, and puts who is asking
+on every request's scope under `mcphub.identity`: the username, whether they
+are an admin, their level on this backend, the mount prefix, the session's
+CSRF token and the hub's public URL. The app runs on the hub's origin as a
+trusted interface does, so it is held to the same standard: it is the hub's
+own code or a plugin the administrator installed, not an address someone typed
+in. It is built once at mount time from the same instance `build()` receives,
+storage path included, so the two can share state; if building it raises, the
+backend mounts without it and the log says so.
+
+Two details a plugin's scripts can rely on: a request that arrives without a
+session gets a `303` to the login page when it is a navigation, but a `401`
+with `{"error": "session_expired"}` when the browser marks it as a script's
+request (`Sec-Fetch-Mode` other than `navigate`), so a save never lands on the
+login page's HTML; and the hub's own look is served at `/static/hub.css`, which
+a plugin page links instead of defining colours of its own.
+
 #### Sandboxed, or trusted
 
 There are two ways to serve an interface, and the difference is who you are
@@ -691,7 +712,7 @@ has to mount, so its own tools can report the failure. A plugin that fails to
 import is logged and skipped rather than taking the hub down with it.
 
 `PluginDefaults` answers the hooks the hub calls on every plugin — `fields_for`,
-`options`, `on_save`, `variant`, `tool_names` and `review_before_enable`. They
+`options`, `on_save`, `variant`, `tool_names`, `web_app` and `review_before_enable`. They
 are optional to *write*, not optional to *have*: a plugin supplying none of them
 is refused at load rather than raising later inside a request, with the settings
 page half drawn. Override the ones you want:
@@ -705,6 +726,7 @@ page half drawn. Override the ones you want:
 | `variant(instance, version)` | the same backend as it runs at a pinned version |
 | `on_delete(instance)` | release what this backend holds elsewhere, before it is forgotten |
 | `tool_names(instance)` | lets Update report *what* changed, not just that something did |
+| `web_app(instance)` | the backend's own browser interface, served in-process at `/ui/<name>/` behind the hub's gate |
 | `review_before_enable` | create backends of this kind disabled, pending a look at their tools |
 
 ### Refusing a configuration

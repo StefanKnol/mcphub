@@ -1,0 +1,142 @@
+/* mcphub's look: the design tokens, the base element styles and the components every
+   hub page uses. Served at /static/hub.css and linked by every hub page and by every
+   plugin's own interface, so a plugin page inherits the palette, the type and the
+   focus ring without defining colours of its own. Light and dark follow the system. */
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14171a; --muted: #5b6570;
+    --line: #dfe3e8; --accent: #1f6feb; --ok: #1a7f46; --bad: #b3261e;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e1116; --panel:#161b22; --ink:#e6edf3; --muted:#9aa7b4;
+            --line:#2a313a; --accent:#589bff; --ok:#3fb950; --bad:#f85149; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  a { color: var(--accent); }
+  header { border-bottom:1px solid var(--line); background:var(--panel); }
+  .bar { max-width:900px; margin:0 auto; padding:14px 20px; display:flex; align-items:center; gap:16px; }
+  .bar strong { font-size:16px; letter-spacing:-.01em; }
+  .bar nav { margin-left:auto; display:flex; gap:16px; font-size:14px; }
+  main { max-width:900px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; letter-spacing:-.02em; }
+  h2 { font-size:16px; margin:28px 0 10px; }
+  .sub { color:var(--muted); margin:0 0 22px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px; margin-bottom:14px; }
+  label { display:block; font-weight:600; font-size:13px; margin-bottom:5px; }
+  .help { color:var(--muted); font-size:13px; margin:5px 0 0; }
+  /* An attribute selector does not match a defaulted type: `input[type=text]`
+     skips `<input name="username">` entirely, leaving it unstyled beside the
+     password field below it. Match the types we use and the absent case. */
+  input:not([type]), input[type=text], input[type=password], input[type=number],
+  input[type=search], input[type=email], input[type=url], textarea {
+    width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--ink); font:inherit; appearance:none; }
+  textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; resize:vertical; }
+  input::placeholder, textarea::placeholder { color:var(--muted); opacity:.8; }
+  input:focus, textarea:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+  input:disabled, textarea:disabled { opacity:.6; cursor:not-allowed; }
+  input[type=search]::-webkit-search-decoration,
+  input[type=search]::-webkit-search-cancel-button { appearance:none; }
+  input[type=checkbox] { width:auto; accent-color:var(--accent); }
+  /* :user-invalid, not :invalid — the latter matches an empty required field
+     on page load, so every form opens covered in red before anyone types. */
+  input:user-invalid, textarea:user-invalid { border-color:var(--bad); }
+  .field { margin-bottom:16px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .row > .field { flex:1 1 220px; }
+  button, .btn {
+    font:inherit; font-weight:600; padding:9px 15px; border-radius:8px; cursor:pointer;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); text-decoration:none;
+    display:inline-block; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--bad); border-color:var(--bad); background:transparent; }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; }
+  .pill { font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+  .pill.on { color:var(--ok); border-color:var(--ok); }
+  .pill.off { color:var(--muted); }
+  code, .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  .url { display:block; margin-top:8px; padding:8px 10px; background:var(--bg);
+         border:1px solid var(--line); border-radius:8px; word-break:break-all; }
+  .errors { border:1px solid var(--bad); color:var(--bad); border-radius:8px; padding:11px 14px; margin-bottom:18px; }
+  .note { color:var(--muted); font-size:13px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:14px; }
+  .grid .card { margin:0; display:flex; flex-direction:column; }
+  .grid .card .actions { margin-top:auto; padding-top:12px; }
+  .logo { width:38px; height:38px; border-radius:9px; flex:none; object-fit:contain;
+          background:var(--bg); border:1px solid var(--line); }
+  /* Not every server publishes an icon, so the fallback is a monogram rather
+     than a broken-image frame or a generic placeholder repeated down the page. */
+  .monogram { display:flex; align-items:center; justify-content:center;
+              font-weight:700; font-size:15px; color:var(--accent); letter-spacing:-.02em; }
+  .backend { display:flex; gap:14px; align-items:flex-start; }
+  .backend .meta { flex:1; min-width:0; }
+  .checkline { display:flex; align-items:center; gap:9px; }
+  .checkline label { margin:0; font-weight:500; }
+  .result { font-size:13px; margin-left:4px; }
+  .result.ok { color:var(--ok); } .result.bad { color:var(--bad); }
+  .toolbar { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  button.tiny { padding:3px 9px; font-size:12px; font-weight:500; }
+  button.quiet { background:none; border:none; color:var(--muted); text-decoration:underline;
+                 padding:9px 4px; }
+  button.quiet:hover { color:var(--ink); }
+  .filter { flex:1 1 160px; padding:5px 9px; font-size:13px; }
+  .picker { max-height:340px; overflow-y:auto; border:1px solid var(--line);
+            border-radius:8px; padding:6px 10px; background:var(--bg); }
+  .pick { display:flex; gap:8px; align-items:flex-start; padding:3px 0; }
+  .pick label { font-weight:400; margin:0; font-size:13px; cursor:pointer; }
+  .pick input { margin-top:3px; flex:none; }
+  /* A grant row carries its level beside it. The level is dimmed until the
+     backend is actually granted, since until then it decides nothing. */
+  .pick.grant { align-items:center; padding:4px 0; }
+  .pick.grant label { flex:1; }
+  .pick.grant .select-wrap { flex:none; width:104px; }
+  .pick.grant select { padding:4px 26px 4px 9px; font-size:12px; }
+  .pick.grant .select-wrap::after { right:10px; width:6px; height:6px; }
+  .pick.grant:not(:has(input:checked)) .select-wrap { opacity:.4; }
+  .tabs { display:flex; gap:4px; margin:0 0 16px; border-bottom:1px solid var(--line); }
+  .tabs a { padding:8px 14px; font-size:14px; font-weight:500; text-decoration:none;
+            color:var(--muted); border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tabs a:hover { color:var(--ink); }
+  .tabs a.on { color:var(--ink); border-bottom-color:var(--accent); }
+  .card.saved { border-color:var(--ok); color:var(--ok); padding:12px 16px; font-size:14px; }
+  .card.issued { border-color:var(--accent); }
+  code.secret { font-size:17px; letter-spacing:.04em; padding:8px 12px; border-radius:8px;
+                background:var(--bg); border:1px solid var(--line); user-select:all; }
+  .legend { margin:8px 0 0; padding:0; list-style:none;
+            color:var(--muted); font-size:13px; line-height:1.55; }
+  .legend strong { color:var(--ink); font-weight:600; }
+  pre.prompt { white-space:pre-wrap; word-break:break-word; margin:12px 0 0; padding:14px;
+               background:var(--bg); border:1px solid var(--line); border-radius:8px;
+               font-size:13px; line-height:1.55; max-height:60vh; overflow-y:auto; }
+  .legend li + li { margin-top:5px; }
+  .path { margin:4px 0 0; }
+  .path code { background:var(--bg); border:1px solid var(--line); border-radius:6px;
+               padding:5px 9px; display:inline-block; font-size:13px; }
+  .count { margin-left:auto; }
+  /* A styled <dialog>, not the platform's confirm(): the native dialog ignores
+     the page's theming entirely and looks wrong in dark mode. Using the element
+     rather than hand-rolling one keeps focus trapping, background inerting and
+     Escape-to-close, which are tedious to get right by hand. */
+  dialog.modal {
+    border:1px solid var(--line); border-radius:var(--radius); padding:0;
+    background:var(--panel); color:var(--ink); max-width:420px; width:calc(100% - 40px); }
+  dialog.modal::backdrop { background:rgba(0,0,0,.55); backdrop-filter:blur(2px); }
+  dialog.modal .body { padding:20px 20px 0; }
+  dialog.modal h3 { margin:0 0 8px; font-size:16px; }
+  dialog.modal p { margin:0; color:var(--muted); font-size:14px; }
+  dialog.modal .foot { display:flex; gap:10px; justify-content:flex-end; padding:18px 20px 20px; }
+  .field-error { color:var(--bad); font-size:13px; margin:5px 0 0; }
+  /* The platform's own select ignores the theme, so it is restyled and given a
+     drawn arrow rather than the user agent's. */
+  .select-wrap { position:relative; }
+  .select-wrap::after {
+    content:""; position:absolute; right:13px; top:50%; width:8px; height:8px;
+    border-right:2px solid var(--muted); border-bottom:2px solid var(--muted);
+    transform:translateY(-70%) rotate(45deg); pointer-events:none; }
+  select {
+    width:100%; padding:9px 34px 9px 11px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--ink); font:inherit; appearance:none; cursor:pointer; }
+  .field[hidden] { display:none; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td,th { text-align:left; padding:7px 10px 7px 0; border-bottom:1px solid var(--line); }

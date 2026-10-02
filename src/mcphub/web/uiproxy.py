@@ -51,6 +51,17 @@ HOP_BY_HOP = {
 # and the host must be the upstream's own.
 STRIP_REQUEST = HOP_BY_HOP | {"cookie", "host", "authorization", "content-length"}
 
+IDENTITY_HEADER_PREFIX = "x-mcphub-"
+"""The headers a trusted upstream is told who is signed in with. They are the
+hub's to set, or to withhold: one the browser sent is a page claiming to be
+someone, so it is dropped before the hub's own are added — on a sandboxed
+mount, where nothing is added, it would otherwise arrive unmodified."""
+
+
+def forwardable_request_header(name: str) -> bool:
+    lowered = name.lower()
+    return lowered not in STRIP_REQUEST and not lowered.startswith(IDENTITY_HEADER_PREFIX)
+
 # Never returned to the browser: an opaque origin cannot use cookies anyway, and
 # the upstream's framing and transport policies are not ours to relay.
 STRIP_RESPONSE = HOP_BY_HOP | {
@@ -201,7 +212,7 @@ async def forward(request: Request, upstream_base: str, prefix: str, *,
     if request.url.query:
         target = f"{target}?{request.url.query}"
 
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in STRIP_REQUEST}
+    headers = {k: v for k, v in request.headers.items() if forwardable_request_header(k)}
     # Identify the mount, so an upstream that can use it builds correct links.
     headers["x-forwarded-prefix"] = prefix.rstrip("/")
     for key, value in (identity or {}).items():
@@ -395,7 +406,8 @@ async def forward_socket(websocket: Any, upstream_base: str, path: str, *,
 
     target = socket_url(upstream_base, path, websocket.url.query)
     headers = {k: v for k, v in websocket.headers.items()
-               if k.lower() not in WS_STRIP_REQUEST}
+               if k.lower() not in WS_STRIP_REQUEST
+               and not k.lower().startswith(IDENTITY_HEADER_PREFIX)}
     headers["x-forwarded-prefix"] = f"/ui/{websocket.path_params['slug']}"
     headers.update(identity or {})
     offered = websocket.scope.get("subprotocols") or []

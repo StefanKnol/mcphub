@@ -59,6 +59,9 @@ class Variant:
     app: Any
     owner: asyncio.Task[None]
     stop: asyncio.Event
+    web_app: Any = None
+    """The backend's own browser interface (see `Plugin.web_app`), built for the
+    default variant only; None when the plugin has none or it failed to build."""
 
 
 @dataclass
@@ -75,6 +78,12 @@ class Mounted:
     def server(self) -> MCPServer:
         """The default variant's server, for callers that just want one."""
         return self.variants[""].server
+
+    @property
+    def web_app(self) -> Any:
+        """The default variant's browser interface, or None."""
+        default = self.variants.get("")
+        return default.web_app if default is not None else None
 
 
 class MountManager:
@@ -102,6 +111,11 @@ class MountManager:
     def active(self) -> list[Mounted]:
         return sorted(self._mounted.values(), key=lambda m: m.slug)
 
+    def web_app_for(self, slug: str) -> Any:
+        """A mounted backend's own browser interface, or None when it has none or is not mounted."""
+        mounted = self._mounted.get(slug)
+        return mounted.web_app if mounted is not None else None
+
     async def _start_variant(self, plugin: Plugin, instance: BackendInstance,
                              version: str) -> Variant:
         """Build and start one version's server. Same lifespan dance as a mount."""
@@ -118,6 +132,19 @@ class MountManager:
             # restart rotates them and the database keeps only hashes.
             granted=self._apps.issue(instance.slug) if self._apps else {})
         server = plugin.build(shaped)
+        # The browser interface fronts the backend, not a version of it: a
+        # pinned version has no address of its own at /ui, so only the default
+        # variant builds one. A failure here is the interface's alone — the
+        # tools still mount, and the App page says what happened.
+        web_app = None
+        if not version:
+            build_web_app = getattr(plugin, "web_app", None)
+            if build_web_app is not None:
+                try:
+                    web_app = build_web_app(shaped)
+                except Exception:  # noqa: BLE001 - the interface is optional, the endpoint is not
+                    log.exception("backend %s: its web interface failed to build; "
+                                  "the MCP endpoint is up without it", instance.slug)
         # Innermost, so it sees what the backend really answered rather than
         # anything a plugin's own middleware went on to add.
         server.middleware.append(roles.RoleGuard(server, instance.slug))
@@ -153,7 +180,8 @@ class MountManager:
             stop.set()
             owner.cancel()
             raise
-        return Variant(version=version, server=server, app=sub_app, owner=owner, stop=stop)
+        return Variant(version=version, server=server, app=sub_app, owner=owner, stop=stop,
+                       web_app=web_app)
 
     def pin_for(self, username: str | None, slug: str) -> str:
         """The version this account chose for this backend, or "" for the default."""
