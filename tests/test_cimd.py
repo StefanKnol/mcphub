@@ -16,7 +16,7 @@ from mcphub.auth.cimd import (
     MAX_BODY_BYTES,
     CimdError,
     ClientMetadataResolver,
-    _public_addresses,
+    public_addresses,
     is_cimd_client_id,
 )
 
@@ -66,12 +66,12 @@ def test_private_and_loopback_addresses_are_refused(host):
     """This hub sits on a LAN with a router on it. A client id must not become
     a way to make the hub reach into that network."""
     with pytest.raises(CimdError, match="public"):
-        _public_addresses(host)
+        public_addresses(host)
 
 
 def test_an_unresolvable_host_is_refused():
     with pytest.raises(CimdError):
-        _public_addresses("nonexistent.invalid")
+        public_addresses("nonexistent.invalid")
 
 
 # ── reading the document ──────────────────────────────────────────────────

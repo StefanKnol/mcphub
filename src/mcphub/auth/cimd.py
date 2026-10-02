@@ -68,8 +68,13 @@ def is_cimd_client_id(client_id: str | None) -> bool:
     return parsed.scheme == "https" and parsed.path not in ("", "/")
 
 
-def _public_addresses(host: str) -> list[str]:
-    """Resolve a host, refusing anything that is not a public unicast address."""
+def public_addresses(host: str) -> list[str]:
+    """Resolve a host, refusing anything that is not a public unicast address.
+
+    Public, not private: a plugin that takes an address from a user (a git
+    remote to push a vault to, say) has the same question, and should not
+    answer it with a second copy of this list.
+    """
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
@@ -112,7 +117,7 @@ class ClientMetadataResolver:
         # separately. Production passes neither, and the defaults are the strict
         # behaviour — there is no switch here that turns a check off.
         self._transport = transport
-        self._resolve = resolve_addresses or _public_addresses
+        self._resolve = resolve_addresses or public_addresses
 
     async def resolve(self, client_id: str) -> OAuthClientInformationFull | None:
         if not self.enabled or not is_cimd_client_id(client_id):

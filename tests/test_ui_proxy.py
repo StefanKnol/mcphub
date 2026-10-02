@@ -223,3 +223,14 @@ def test_identity_headers_are_only_for_trusted_apps():
     source = inspect.getsource(routes.build)
     assert "x-mcphub-user" in source
     assert "if trusted else None" in source
+
+
+@pytest.mark.parametrize("name", ["x-mcphub-user", "X-Mcphub-Admin", "x-mcphub-role", "x-mcphub-anything"])
+def test_identity_headers_from_the_browser_are_never_forwarded(name):
+    """On a sandboxed mount nothing is added, so a header the page sent would
+    otherwise reach the upstream as if the hub had vouched for it."""
+    from mcphub.web.uiproxy import forwardable_request_header
+
+    assert not forwardable_request_header(name)
+    assert forwardable_request_header("accept")
+    assert not forwardable_request_header("Cookie")

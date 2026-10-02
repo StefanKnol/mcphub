@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "mcphub" / "web" / "templates"
+STYLESHEET = TEMPLATES.parent / "static" / "hub.css"
 INPUT_TAG = re.compile(r"<input\b[^>]*>", re.IGNORECASE | re.DOTALL)
 COMMENTS = re.compile(r"<!--.*?-->|/\*.*?\*/", re.DOTALL)
 # `//` line comments too, but not the `//` in a URL, which is preceded by a colon.
@@ -44,7 +45,7 @@ def test_every_input_declares_its_type(path):
 
 
 def test_stylesheet_covers_every_type_used():
-    css = (TEMPLATES / "base.html").read_text()
+    css = STYLESHEET.read_text()
     used = set()
     for path in template_files():
         for tag in INPUT_TAG.findall(markup(path)):
@@ -58,12 +59,12 @@ def test_stylesheet_covers_every_type_used():
 
 def test_untyped_inputs_would_still_be_styled():
     """Belt and braces: the rule also matches an input with no type at all."""
-    assert "input:not([type])" in (TEMPLATES / "base.html").read_text()
+    assert "input:not([type])" in STYLESHEET.read_text()
 
 
 def test_invalid_styling_waits_for_interaction():
     """`:invalid` alone paints every empty required field red on page load."""
-    css = (TEMPLATES / "base.html").read_text()
+    css = STYLESHEET.read_text()
     assert "input:user-invalid" in css
     assert not re.search(r"(?<!user-)input:invalid\b", css), "bare :invalid fires before typing"
 
@@ -101,4 +102,16 @@ def test_forms_with_constraints_opt_out_of_native_validation(path):
 def test_the_modal_exists_for_templates_to_use():
     base = (TEMPLATES / "base.html").read_text()
     assert 'id="app-confirm"' in base
-    assert "dialog.modal::backdrop" in base, "an unstyled backdrop is the browser's own look"
+    assert "dialog.modal::backdrop" in STYLESHEET.read_text(), "an unstyled backdrop is the browser's own look"
+
+
+def test_the_look_lives_in_one_served_stylesheet():
+    """A plugin's own interface cannot extend an inline <style> block, so the
+    tokens and components are a file the hub serves and every page links."""
+    base = (TEMPLATES / "base.html").read_text()
+    assert "<style" not in base, "styles belong in static/hub.css, which plugin pages link too"
+    assert '/static/hub.css?v={{ hub_css_version }}' in base
+    css = STYLESHEET.read_text()
+    for token in ("--bg", "--panel", "--ink", "--muted", "--line", "--accent", "--ok", "--bad", "--radius"):
+        assert f"{token}:" in css, f"{token} is a token plugin interfaces rely on"
+    assert "prefers-color-scheme: dark" in css
