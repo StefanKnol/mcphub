@@ -16,6 +16,7 @@ is entered when it goes up and closed when it comes down.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
@@ -162,7 +163,8 @@ class MountManager:
 
         async def own() -> None:
             try:
-                async with sub_app.router.lifespan_context(sub_app):
+                async with sub_app.router.lifespan_context(sub_app), \
+                        _plugin_lifespan(plugin, shaped, instance.slug, version):
                     if not ready.done():
                         ready.set_result(None)
                     await stop.wait()
@@ -315,6 +317,35 @@ class MountManager:
         for route in routes:
             if route in table:
                 table.remove(route)
+
+
+@contextlib.asynccontextmanager
+async def _plugin_lifespan(plugin: Plugin, instance: BackendInstance, slug: str, version: str):
+    """Hold the plugin's own `lifespan` open while the default variant runs.
+
+    The plugin's half is optional and must stay so: a failure to enter is logged
+    and the backend runs without it, as a failed `web_app` does; a failure to
+    leave is logged and the unmount goes ahead. A pinned version is the same
+    backend, so it does not enter a second one.
+    """
+    hook = getattr(plugin, "lifespan", None)
+    if version or hook is None:
+        yield
+        return
+    try:
+        context = hook(instance)
+        await context.__aenter__()
+    except Exception:  # noqa: BLE001 - the background work is optional, the endpoint is not
+        log.exception("backend %s: its lifespan failed to start; the MCP endpoint is up without it", slug)
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            await context.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001 - already stopping either way
+            log.exception("backend %s: its lifespan raised while stopping", slug)
 
 
 class _VersionDispatch:

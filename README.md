@@ -200,6 +200,17 @@ in. It is built once at mount time from the same instance `build()` receives,
 storage path included, so the two can share state; if building it raises, the
 backend mounts without it and the log says so.
 
+#### Something a backend keeps running
+
+A backend that needs a timer, a watcher or a pool alive for as long as it is
+mounted answers `lifespan(instance)` with an async context manager. The hub
+enters it once the backend's server is up and leaves it when the backend is
+unmounted or the hub stops, in its own event loop, for the default variant
+only. `build()` runs on every rebuild and the MCP SDK's server lifespan runs
+once per client session, so neither was a place to start something once per
+backend. A lifespan that fails to enter is logged and the backend runs without
+it; one that fails to leave is logged and the unmount goes ahead.
+
 Two details a plugin's scripts can rely on: a request that arrives without a
 session gets a `303` to the login page when it is a navigation, but a `401`
 with `{"error": "session_expired"}` when the browser marks it as a script's
@@ -712,7 +723,7 @@ has to mount, so its own tools can report the failure. A plugin that fails to
 import is logged and skipped rather than taking the hub down with it.
 
 `PluginDefaults` answers the hooks the hub calls on every plugin — `fields_for`,
-`options`, `on_save`, `variant`, `tool_names`, `web_app` and `review_before_enable`. They
+`options`, `on_save`, `variant`, `tool_names`, `web_app`, `lifespan` and `review_before_enable`. They
 are optional to *write*, not optional to *have*: a plugin supplying none of them
 is refused at load rather than raising later inside a request, with the settings
 page half drawn. Override the ones you want:
@@ -727,6 +738,7 @@ page half drawn. Override the ones you want:
 | `on_delete(instance)` | release what this backend holds elsewhere, before it is forgotten |
 | `tool_names(instance)` | lets Update report *what* changed, not just that something did |
 | `web_app(instance)` | the backend's own browser interface, served in-process at `/ui/<name>/` behind the hub's gate |
+| `lifespan(instance)` | an async context manager the hub holds open while the backend is mounted, for a timer, a watcher or a pool |
 | `review_before_enable` | create backends of this kind disabled, pending a look at their tools |
 
 ### Refusing a configuration

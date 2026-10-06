@@ -13,8 +13,10 @@ same mechanism with no shortcut.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Iterable, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, get_args, runtime_checkable
@@ -388,6 +390,26 @@ class Plugin(Protocol):
         """
         ...
 
+    def lifespan(self, instance: BackendInstance) -> AbstractAsyncContextManager[None]:
+        """What this backend keeps running for as long as it is mounted.
+
+        An async context manager, in Starlette's sense of the word: the hub
+        enters it once the backend's server is up and leaves it when the backend
+        is unmounted (a config change, a disable, the hub stopping), in the hub's
+        own event loop. A plugin with a timer, a watcher or a pool to keep alive
+        starts it on enter and stops it on exit, and never has to find a loop of
+        its own: `build` runs on every rebuild and the SDK's server lifespan runs
+        once per MCP session, so neither is a place to start something once per
+        backend.
+
+        Entered for the default variant only, with the same instance `build`
+        and `web_app` receive (the storage path included); a pinned version
+        shares whatever it started. Entering may not fail the mount: a raised
+        exception is logged and the backend runs without it, as with `web_app`.
+        An exception while leaving is logged and the unmount goes ahead.
+        """
+        ...
+
     review_before_enable: bool
     """Create new backends of this kind disabled.
 
@@ -444,6 +466,9 @@ class PluginDefaults:
     def web_app(self, instance: BackendInstance) -> Any | None:
         return None
 
+    def lifespan(self, instance: BackendInstance) -> AbstractAsyncContextManager[None]:
+        return contextlib.nullcontext()
+
 
 WEB_IDENTITY_KEY = "mcphub.identity"
 """Where a plugin's web app finds who is asking: see `Plugin.web_app`."""
@@ -453,7 +478,7 @@ REQUIRED_ATTRIBUTES = ("id", "name", "description", "fields", "build", "check")
 """What a plugin must supply itself. There is no default for any of these."""
 
 OPTIONAL_ATTRIBUTES = ("fields_for", "options", "on_save", "on_delete", "validate",
-                       "variant", "tool_names", "review_before_enable", "web_app")
+                       "variant", "tool_names", "review_before_enable", "web_app", "lifespan")
 """Hooks the hub calls unconditionally, and `PluginDefaults` answers for free.
 
 They are optional to *write*, not optional to *have*: mix in `PluginDefaults`
