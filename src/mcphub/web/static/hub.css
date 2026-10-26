@@ -112,6 +112,10 @@
                background:var(--bg); border:1px solid var(--line); border-radius:8px;
                font-size:13px; line-height:1.55; max-height:60vh; overflow-y:auto; }
   .legend li + li { margin-top:5px; }
+  /* What a trial run shows the hub could not pass through. Red, because each
+     one is a real difference between the backend's answer and the model's. */
+  #try-notes { margin:0 0 14px; color:var(--bad); }
+  #try-notes li::before { content:"\26A0\FE0E  "; }
   .path { margin:4px 0 0; }
   .path code { background:var(--bg); border:1px solid var(--line); border-radius:6px;
                padding:5px 9px; display:inline-block; font-size:13px; }
@@ -129,6 +133,7 @@
   dialog.modal p { margin:0; color:var(--muted); font-size:14px; }
   dialog.modal .foot { display:flex; gap:10px; justify-content:flex-end; padding:18px 20px 20px; }
   .field-error { color:var(--bad); font-size:13px; margin:5px 0 0; }
+  p.help.bad { color:var(--bad); }
   /* The platform's own select ignores the theme, so it is restyled and given a
      drawn arrow rather than the user agent's. */
   .select-wrap { position:relative; }

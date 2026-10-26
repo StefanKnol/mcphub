@@ -74,6 +74,7 @@ plugin stays small. Override these when you need them:
 | `options(instance, key)` | Fill a `select` or `multiselect` from the device itself |
 | `validate(instance)` | Refuse a configuration, returning `FieldError`s |
 | `variant(instance, version)` | The same backend at a pinned version |
+| `try_tool(instance, name, arguments)` | Run one tool for the settings page's **Try a tool** panel |
 | `on_save` / `on_delete` | Provision and release whatever the backend needs elsewhere |
 | `review_before_enable` | Create new backends disabled, for tool surfaces from elsewhere |
 
@@ -83,6 +84,13 @@ connection depends on changes, and this is what it reads. The default — `True`
 for everything except a `multiselect`, whose choices came *from* a connection —
 is right for most fields; set it to `False` on one that plainly cannot affect
 reaching the backend, or your users will be asked to re-test for nothing.
+
+`try_tool` has a default that goes through the server you build, which reports
+what a client would receive and is usually all anyone needs. Override it if your
+plugin stands between the caller and something else: return the other thing's
+answer in `raw` and name what you could not pass on in `notes`, and the page
+can show the difference instead of leaving someone to find it. Run the tool
+once — a second call to fill a second pane is a second edit.
 
 Two rules worth stating:
 

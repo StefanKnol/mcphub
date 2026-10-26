@@ -45,6 +45,15 @@ rather than returning to the list.
 gains one: off by default, because a narrowed list is usually narrowed on
 purpose.
 
+**Try a tool** runs one by hand, from the same page. It shows two things — what
+an MCP client would receive, and what the backend itself answered — because
+when a tool misbehaves those look identical from outside, and the difference
+between them is the difference between a server answering oddly and the hub
+changing a good answer. Anything the hub cannot pass through is named rather
+than left to be spotted: structured content alongside text, an image, a `_meta`.
+It is one call, not two, so a tool that writes is not run twice to produce two
+panes; a tool the backend marks destructive asks before it runs.
+
 **A backend for the hub itself.** Every hub has `mcphub`, built in and
 reserved: the documentation below about building apps for it, and tools for
 deploying them. Connect it and whatever you are writing with can read the page

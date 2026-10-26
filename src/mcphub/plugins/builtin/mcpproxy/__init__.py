@@ -35,10 +35,11 @@ from ...base import (
     FieldError,
     Option,
     PluginDefaults,
+    ToolProbe,
 )
 from .... import appaccess
 from .... import storage
-from .mirror import mirror_prompt, mirror_resource, mirror_tool
+from .mirror import _flatten, mirror_prompt, mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
 
 log = logging.getLogger(__name__)
@@ -179,6 +180,32 @@ def _prompt_catalog(instance: BackendInstance) -> list[UpstreamPrompt]:
     except Exception:  # noqa: BLE001 - a stale cache must not break mounting
         log.warning("backend %s: prompt catalogue could not be read", instance.slug)
         return []
+
+
+def _losses(result: Any) -> tuple[str, ...]:
+    """What the upstream sent that a client will not get, named.
+
+    The proxy mirrors a tool as a function returning text, so anything that is
+    not text has to become text on the way. Each of these is a real difference
+    between what the server answered and what the model sees, and all of them
+    are easy to miss in two panes of JSON.
+    """
+    notes: list[str] = []
+    blocks = list(getattr(result, "content", None) or [])
+    kinds = sorted({str(getattr(b, "type", "content")) for b in blocks
+                    if getattr(b, "text", None) is None})
+    if kinds:
+        notes.append(
+            f"The server returned {', '.join(kinds)} content, which this proxy cannot "
+            "pass through — a client gets a note in its place.")
+    if getattr(result, "structured_content", None) is not None and blocks:
+        notes.append(
+            "The server returned structured content as well as text. A client gets the "
+            "text; the structure is not passed on.")
+    meta = getattr(result, "meta", None)
+    if meta:
+        notes.append("The server attached _meta, which is not passed on.")
+    return tuple(notes)
 
 
 def _as_options(tools: Sequence[UpstreamTool]) -> list[Option]:
@@ -601,6 +628,38 @@ class McpProxyPlugin(PluginDefaults):
         finally:
             await upstream.close()
         return _as_options(tools)
+
+    async def try_tool(self, instance: BackendInstance, name: str,
+                       arguments: dict[str, Any]) -> ToolProbe:
+        """Call the upstream once, and show both what it said and what we pass on.
+
+        Both, from one call: what a client receives here is `_flatten` applied
+        to what the upstream returned, and `_flatten` is a function of that
+        result rather than a second request. Calling twice to show two answers
+        would run the tool twice, which for anything that writes is not a
+        diagnostic, it is a second edit.
+        """
+        upstream = _upstream(instance)
+        try:
+            result = await upstream.call_tool(name, arguments)
+        except UpstreamError as exc:
+            return ToolProbe(False, "", detail=str(exc))
+        except Exception as exc:  # noqa: BLE001 - the point is to see the fault
+            return ToolProbe(False, "", detail=f"{type(exc).__name__}: {exc}")
+        finally:
+            await upstream.close()
+
+        failed = bool(getattr(result, "is_error", False))
+        return ToolProbe(
+            ok=not failed,
+            # What the mirrored tool hands back, which is where a structured
+            # answer or an image stops being either of those things.
+            delivered=_flatten(result),
+            raw=result.model_dump(by_alias=True, exclude_none=True)
+            if hasattr(result, "model_dump") else None,
+            detail="The server reported this as an error." if failed else "",
+            notes=_losses(result),
+        )
 
     async def on_save(self, instance: BackendInstance) -> dict[str, Any]:
         """Cache the upstream's tool schemas so `build` can stay offline."""

@@ -97,6 +97,71 @@
   </div>
 </form>
 
+{% if row and not tryable %}
+<h2>Try a tool</h2>
+<div class="card">
+  <p class="help">Nothing to run: this backend is not currently offering any tools, so
+    there is none a client could call either. Press <strong>Test</strong> above, or
+    <strong>Update</strong> on the dashboard, to read them again.</p>
+</div>
+{% endif %}
+{% if row and tryable %}
+<h2>Try a tool</h2>
+<div class="card">
+  <p class="help">Runs one tool against this backend and shows two things: what an MCP
+    client would receive, and what the backend itself answered. When a tool misbehaves
+    those look identical from outside, and the difference between them is the difference
+    between a server answering oddly and the hub changing a good answer.</p>
+  <p class="help"><strong>It really runs.</strong> Whatever the tool does, it does.</p>
+
+  <div class="row">
+    <div class="field">
+      <label for="try-tool">Tool</label>
+      <div class="select-wrap">
+        <select id="try-tool">
+          {% for t in tryable %}
+          <option value="{{ t.name }}" data-skeleton="{{ t.skeleton }}"
+                  data-destructive="{{ 1 if t.destructive else 0 }}">{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <p class="help" id="try-about"></p>
+    </div>
+    <div class="field">
+      <label for="try-args">Arguments</label>
+      <textarea id="try-args" rows="6" spellcheck="false">{}</textarea>
+      <p class="help">JSON. Filled from the tool's own schema — delete what you do not
+        want to send, since an argument left out is not the same as one sent empty.</p>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button type="button" class="primary" id="try-run">Run it</button>
+    <span class="result" id="try-result"></span>
+  </div>
+
+  <div id="try-output" hidden>
+    <ul class="legend" id="try-notes" hidden></ul>
+    <label>What a client receives</label>
+    <pre class="prompt" id="try-delivered"></pre>
+    <label style="margin-top:14px">What the backend answered</label>
+    <pre class="prompt" id="try-raw"></pre>
+  </div>
+</div>
+
+<dialog class="modal" id="try-confirm">
+  <div class="body">
+    <h3>Run <span class="mono" id="try-confirm-name"></span>?</h3>
+    <p>This backend marks it as destructive. Running it here is not a rehearsal — it does
+      whatever it does, to whatever it does it to.</p>
+  </div>
+  <div class="foot">
+    <button type="button" value="no">Cancel</button>
+    <button type="button" class="danger" value="yes">Run it</button>
+  </div>
+</dialog>
+{% endif %}
+
 <script>
 // Test what is typed. The whole form goes up, including a secret left blank to
 // keep its stored value — the server merges that back in the same way a save
@@ -267,6 +332,91 @@ function fillPicker(key, options) {
   wirePicker(picker);
   return options.length;
 }
+
+// Run one tool by hand, and show both answers.
+(function () {
+  var picker = document.getElementById("try-tool");
+  if (!picker) return;
+  var args = document.getElementById("try-args");
+  var about = document.getElementById("try-about");
+  var out = document.getElementById("try-result");
+  var output = document.getElementById("try-output");
+  var confirm = document.getElementById("try-confirm");
+
+  function chosen() { return picker.options[picker.selectedIndex]; }
+
+  function describe() {
+    var option = chosen();
+    if (!option) return;
+    args.value = option.dataset.skeleton || "{}";
+    about.textContent = option.dataset.destructive === "1"
+      ? "This backend marks it as destructive."
+      : "";
+    about.className = option.dataset.destructive === "1" ? "help bad" : "help";
+    output.hidden = true;
+    out.textContent = "";
+  }
+  picker.addEventListener("change", describe);
+  describe();
+
+  function ask() {
+    // Not the platform's confirm(): this one says what is about to happen,
+    // in this page's own type.
+    return new Promise(function (resolve) {
+      document.getElementById("try-confirm-name").textContent = picker.value;
+      function done(answer) {
+        confirm.close();
+        confirm.querySelectorAll("button").forEach(function (b) { b.onclick = null; });
+        resolve(answer);
+      }
+      confirm.querySelectorAll("button").forEach(function (button) {
+        button.onclick = function () { done(button.value === "yes"); };
+      });
+      confirm.showModal();
+    });
+  }
+
+  document.getElementById("try-run").addEventListener("click", async function () {
+    if (chosen().dataset.destructive === "1" && !(await ask())) return;
+    var button = this;
+    button.disabled = true;
+    out.className = "result";
+    out.textContent = "Running\u2026";
+    output.hidden = true;
+    try {
+      var body = new URLSearchParams({ tool: picker.value, arguments: args.value });
+      var res = await fetch("/backends/" + encodeURIComponent({{ slug|tojson }}) + "/try",
+                            { method: "POST", body: body });
+      var data = await res.json();
+      out.className = "result " + (data.ok ? "ok" : "bad");
+      out.textContent = (data.ok ? "Returned" : "Failed")
+        + (data.took_ms != null ? " in " + data.took_ms + " ms" : "")
+        + (data.detail ? " \u2014 " + data.detail : "");
+      var notes = document.getElementById("try-notes");
+      notes.replaceChildren();
+      (data.notes || []).forEach(function (note) {
+        var item = document.createElement("li");
+        item.textContent = note;
+        notes.append(item);
+      });
+      notes.hidden = !(data.notes || []).length;
+      if (data.delivered !== undefined || data.raw !== undefined) {
+        document.getElementById("try-delivered").textContent =
+          data.delivered || "(nothing — the tool returned no content)";
+        document.getElementById("try-raw").textContent = data.raw === null
+          || data.raw === undefined
+          ? "(this plugin cannot show the backend's own answer separately)"
+          : JSON.stringify(data.raw, null, 2);
+        output.hidden = false;
+      }
+    } catch (err) {
+      out.className = "result bad";
+      out.textContent = "Could not run it: " + err;
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
 
 document.querySelectorAll("select.version").forEach(async function (select) {
   var slug = select.dataset.slug;

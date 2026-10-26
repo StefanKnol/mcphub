@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -84,6 +85,67 @@ RESERVED_SLUGS = {"login", "logout", "account", "accounts", "backends", "healthz
                   # The hub's own backend. Reserved so nothing else can take the
                   # name, and kept by the one thing that is allowed to have it.
                   HUB_SLUG}
+
+
+_PLACEHOLDERS: dict[str, Any] = {
+    "string": "", "number": 0, "integer": 0, "boolean": False, "array": [], "object": {},
+}
+
+
+def argument_skeleton(schema: Any) -> str:
+    """A JSON object with a slot per parameter, required ones first.
+
+    Every parameter rather than only the required ones: the optional one is
+    usually what you are trying a tool to find out about, and deleting a line
+    is easier than reading a schema to learn the line exists.
+    """
+    if not isinstance(schema, dict):
+        return "{}"
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return "{}"
+    required = [k for k in schema.get("required", []) if k in properties]
+    ordered = required + [k for k in properties if k not in required]
+    filled = {}
+    for key in ordered:
+        spec = properties[key] if isinstance(properties[key], dict) else {}
+        kind = spec.get("type")
+        if isinstance(kind, list):
+            kind = next((k for k in kind if k != "null"), None)
+        if "default" in spec:
+            filled[key] = spec["default"]
+        elif isinstance(spec.get("enum"), list) and spec["enum"]:
+            filled[key] = spec["enum"][0]
+        else:
+            filled[key] = _PLACEHOLDERS.get(str(kind), None)
+    return json.dumps(filled, indent=2)
+
+
+async def tools_to_try(plugin: Any, instance: BackendInstance | None) -> list[dict[str, Any]]:
+    """The tools a client would be offered, ready to be run by hand.
+
+    Read off the server the plugin builds rather than off any catalogue, so
+    what the page offers to run is what is actually exposed — a tool left out
+    of the selection is one a client cannot call either, and offering it here
+    would answer a question nobody asked.
+    """
+    if instance is None:
+        return []
+    try:
+        built = await plugin.build(instance).list_tools()
+    except Exception:  # noqa: BLE001 - the settings page still has to render
+        log.info("backend %s: could not list its tools to offer a trial run", instance.slug)
+        return []
+    out = []
+    for tool in sorted(built, key=lambda t: t.name):
+        annotations = getattr(tool, "annotations", None)
+        out.append({
+            "name": tool.name,
+            "description": (tool.description or "").split("\n")[0][:160],
+            "destructive": getattr(annotations, "destructive_hint", None) is True,
+            "skeleton": argument_skeleton(getattr(tool, "input_schema", None)),
+        })
+    return out
 
 
 def adopt_new_tools(config: dict[str, Any], before: set[str], after: set[str]) -> None:
@@ -841,6 +903,7 @@ def build(hub: Any) -> list[Route]:
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
                           has_app_page=bool(row) and slug != HUB_SLUG,
+                          tryable=await tools_to_try(plugin, instance),
                           saved=bool(request.query_params.get("saved")),
                           just_added=bool(request.query_params.get("new")),
                           pinnable=bool(row and instance
@@ -898,6 +961,7 @@ def build(hub: Any) -> list[Route]:
                           original_slug=slug or NEW_BACKEND,
                           orphans=orphaned_secrets(plugin, instance),
                           has_app_page=bool(row) and slug != HUB_SLUG,
+                          tryable=await tools_to_try(plugin, instance),
                           saved=False, just_added=False,
                           pinnable=bool(row and instance
                                         and instance.config.get("registry_name")
@@ -1089,6 +1153,62 @@ def build(hub: Any) -> list[Route]:
                     for o in await plugin.options(instance, field.key)
                 ]
         return JSONResponse({"ok": result.ok, "detail": result.detail, "options": choices})
+
+    async def backend_try(request: Request) -> Response:
+        """Run one tool by hand and report what came back.
+
+        The two questions someone has when a tool misbehaves are "what did the
+        server say" and "is the hub changing it", and from outside those look
+        identical. This answers both from one call.
+        """
+        user = require_user(request)
+        if not user:
+            return JSONResponse({"ok": False, "detail": "Not signed in."}, status_code=401)
+        # Running a tool is a smaller thing than configuring the backend that
+        # offers it, and whoever may configure it can already make it run
+        # anything. The same right covers both.
+        if not may_manage_backends(user):
+            return JSONResponse({"ok": False, "detail": "This account cannot configure backends."},
+                                status_code=403)
+
+        slug = request.path_params["slug"]
+        row = hub.backend_row(slug)
+        if row is None:
+            return JSONResponse({"ok": False, "detail": "No such backend."}, status_code=404)
+        plugin = hub.registry.get(row["plugin_id"])
+        if plugin is None:
+            return JSONResponse({"ok": False, "detail": f"Plugin {row['plugin_id']!r} is not installed."},
+                                status_code=404)
+
+        form = await request.form()
+        name = str(form.get("tool", "")).strip()
+        if not name:
+            return JSONResponse({"ok": False, "detail": "Pick a tool to run."})
+        raw_arguments = str(form.get("arguments", "") or "").strip() or "{}"
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            return JSONResponse({"ok": False, "detail": f"The arguments are not valid JSON: {exc}"})
+        if not isinstance(arguments, dict):
+            return JSONResponse({"ok": False,
+                                 "detail": "The arguments must be a JSON object, like {\"word\": \"x\"}."})
+
+        instance = hub.instance_from_row(row)
+        started = time.perf_counter()
+        try:
+            probe = await plugin.try_tool(instance, name, arguments)
+        except Exception as exc:  # noqa: BLE001 - shown rather than logged away
+            log.exception("trying %s on backend %s failed", name, slug)
+            return JSONResponse({"ok": False, "detail": f"{type(exc).__name__}: {exc}"})
+        took = round((time.perf_counter() - started) * 1000)
+        log.info("tool %s on backend %s run by %r: %s",
+                 name, slug, user["username"], "ok" if probe.ok else "failed")
+        return JSONResponse({
+            "ok": probe.ok, "detail": probe.detail, "took_ms": took,
+            "delivered": probe.delivered,
+            "raw": probe.raw,
+            "notes": list(probe.notes),
+        })
 
     async def backend_refresh(request: Request) -> Response:
         """Re-launch the backend and re-read what it offers.
@@ -1843,6 +1963,7 @@ def build(hub: Any) -> list[Route]:
         Route("/backends/new", backend_form, methods=["GET", "POST"]),
         Route("/backends/{slug}", backend_form, methods=["GET", "POST"]),
         Route("/backends/{slug}/app", backend_app_form, methods=["GET", "POST"]),
+        Route("/backends/{slug}/try", backend_try, methods=["POST"]),
         Route("/backends/{slug}/test", backend_test, methods=["POST"]),
         Route("/backends/{slug}/refresh", backend_refresh, methods=["POST"]),
         Route("/backends/{slug}/versions", backend_versions),

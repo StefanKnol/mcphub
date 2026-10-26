@@ -238,6 +238,28 @@ class CheckResult:
 
 
 @dataclass(frozen=True)
+class ToolProbe:
+    """One tool run by hand, reported for someone trying to find a fault.
+
+    `delivered` is the thing that matters: exactly what an MCP client receives
+    back, after whatever the hub did to it on the way. `raw` is what the
+    backend itself returned, where the plugin is in a position to show it —
+    which is how you tell "the server answered oddly" from "the hub mangled a
+    good answer", and the two are otherwise indistinguishable from outside.
+    """
+
+    ok: bool
+    delivered: str
+    raw: Any = None
+    detail: str = ""
+    notes: tuple[str, ...] = ()
+    """Differences between the two worth pointing at rather than leaving to be
+    spotted. Something the backend returned and the hub did not pass on is the
+    answer to the question that brought someone here, and it is easy to miss
+    in two panes of JSON."""
+
+
+@dataclass(frozen=True)
 class FieldError:
     """One reason a plugin refused a configuration.
 
@@ -429,6 +451,37 @@ class PluginDefaults:
 
     def variant(self, instance: BackendInstance, version: str) -> BackendInstance:
         return instance
+
+    async def try_tool(self, instance: BackendInstance, name: str,
+                       arguments: dict[str, Any]) -> ToolProbe:
+        """Run one of this backend's tools and report what came back.
+
+        The default goes through a server built for the occasion, so what it
+        reports is what a client would receive — which is the question being
+        asked. Override it in either of two cases: a plugin that stands between
+        the caller and something else can show that something else's answer in
+        `raw` and name what it could not pass on in `notes`, and one whose tools
+        depend on state its `lifespan` holds should reach for that state rather
+        than a fresh build, which has none of it.
+        """
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        server = self.build(instance)
+        try:
+            result = await server.call_tool(name, arguments)
+        except ToolError as exc:
+            return ToolProbe(False, "", detail=str(exc))
+        except Exception as exc:  # noqa: BLE001 - the point is to see the fault
+            return ToolProbe(False, "", detail=f"{type(exc).__name__}: {exc}")
+        return ToolProbe(
+            ok=not getattr(result, "is_error", False),
+            delivered="\n".join(
+                getattr(block, "text", None) or f"[{getattr(block, 'type', 'content')}]"
+                for block in (getattr(result, "content", None) or [])
+            ),
+            raw=result.model_dump(by_alias=True, exclude_none=True)
+            if hasattr(result, "model_dump") else None,
+        )
 
     def uses_storage(self, instance: BackendInstance) -> bool:
         """Whether this backend should be given a directory on the data volume.
