@@ -39,6 +39,7 @@ from ...base import (
 )
 from .... import appaccess
 from .... import storage
+from .live import LIVE_LIST_TIMEOUT_SECONDS, ProxiedServer
 from .mirror import _flatten, mirror_prompt, mirror_resource, mirror_tool
 from .upstream import Upstream, UpstreamConfig, UpstreamError
 
@@ -499,11 +500,15 @@ class McpProxyPlugin(PluginDefaults):
         allow = _allowed(instance)
         catalog = _catalog(instance)
 
-        mcp = MCPServer(
+        mcp = ProxiedServer(
             name=f"proxy-{instance.slug}",
             title=instance.title,
             instructions=str(instance.config.get("upstream_instructions") or "") or None,
             version="0.1.0",
+            # Resources and prompts are listed live from this upstream, with
+            # the catalogue below as the fallback; tools stay on the catalogue.
+            upstream=upstream,
+            live_list_timeout_seconds=min(LIVE_LIST_TIMEOUT_SECONDS, upstream._cfg.timeout),
         )
 
         exposed = 0
@@ -516,6 +521,8 @@ class McpProxyPlugin(PluginDefaults):
         # Resources are not filtered by the tool allowlist. A `ui://` resource
         # exists to be fetched by a tool that is exposed, and withholding it
         # would leave that tool pointing at an interface the client cannot load.
+        # These mirrored entries are what a client is offered when the upstream
+        # cannot be asked live, and what serves a read of a uri cached here.
         resources = 0
         for resource in _resource_catalog(instance):
             if mirror_resource(mcp, upstream, resource):

@@ -36,13 +36,39 @@ import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import Prompt, Resource, Tool
+from mcp.shared.exceptions import MCPError
+from mcp.types import CONNECTION_CLOSED, METHOD_NOT_FOUND, REQUEST_TIMEOUT, Prompt, Resource, ResourceTemplate, Tool
 
 log = logging.getLogger(__name__)
 
 
 class UpstreamError(RuntimeError):
     """An upstream failure worth showing the user verbatim."""
+
+
+class UpstreamRefusal(UpstreamError):
+    """The upstream answered, and said no: an unknown resource, a bad argument.
+
+    Kept apart from a failure to reach it, for two reasons. The session is
+    fine, so it is not closed (closing it would relaunch a stdio server for
+    every refusal). And the upstream's own code and sentence are what a client
+    of the hub should be handed, rather than the hub's account of a failure.
+    """
+
+    def __init__(self, label: str, code: int, message: str) -> None:
+        super().__init__(f"{label}: {message}")
+        self.code = code
+        self.message = message
+
+
+def _is_a_refusal(exc: BaseException) -> bool:
+    """Whether an error is the upstream answering no, rather than the line failing.
+
+    The client session reports a dropped connection and a request that timed
+    out as MCPErrors too, with codes of their own; those are failures to reach
+    the upstream, and a reconnect is the answer to them.
+    """
+    return isinstance(exc, MCPError) and exc.code not in (CONNECTION_CLOSED, REQUEST_TIMEOUT)
 
 
 @dataclass(frozen=True)
@@ -165,7 +191,12 @@ class Upstream:
         self._session = None
 
     async def _retrying(self, fn_name: str, *args: Any, **kwargs: Any) -> Any:
-        """Run one call, rebuilding the session once if it has gone away."""
+        """Run one call, rebuilding the session once if it has gone away.
+
+        A refusal (the upstream answered, and said no) is neither a session
+        gone away nor worth asking again, so it is raised as it is, with the
+        session left open.
+        """
         for attempt in (1, 2):
             session = await self.session()
             try:
@@ -173,13 +204,58 @@ class Upstream:
             except UpstreamError:
                 raise
             except Exception as exc:  # noqa: BLE001 - transport-level failure
+                if _is_a_refusal(exc):
+                    raise UpstreamRefusal(self._cfg.label, exc.code, exc.message) from exc
                 await self.close()
                 if attempt == 2:
                     raise UpstreamError(_explain(self._cfg.label, exc, self._stderr.tail())) from exc
                 log.info("upstream %s dropped, reconnecting (%s)", self._cfg.label, exc)
         raise AssertionError("unreachable")
 
+    async def _once(self, function_name: str, capability: str, *arguments: Any) -> Any:
+        """Ask the upstream once, without the reconnect-and-retry of `_retrying`.
+
+        For a question asked while a client waits, where one attempt is the
+        budget and the caller has an answer of its own to fall back on. A
+        protocol error (the upstream answered, and said no) leaves the session
+        alone: closing it would relaunch a stdio server on every list. A
+        transport failure closes it, so the next request reconnects.
+
+        An upstream whose handshake says it offers no such capability is not
+        asked at all, and the failure says so.
+        """
+        session = await self.session()
+        capabilities = session.server_capabilities
+        if capabilities is not None and getattr(capabilities, capability, None) is None:
+            raise UpstreamRefusal(self._cfg.label, METHOD_NOT_FOUND,
+                                  f"The server does not offer {capability}.")
+        try:
+            return await getattr(session, function_name)(*arguments)
+        except Exception as exc:  # noqa: BLE001 - transport-level failure
+            if _is_a_refusal(exc):
+                raise UpstreamRefusal(self._cfg.label, exc.code, exc.message) from exc
+            await self.close()
+            raise UpstreamError(_explain(self._cfg.label, exc, self._stderr.tail())) from exc
+
     # ── introspection and forwarding ──────────────────────────────────────
+
+    async def list_resources_once(self) -> list[Resource]:
+        """The resources the upstream lists now. Raises when it cannot be asked."""
+        return (await self._once("list_resources", "resources")).resources
+
+    async def list_prompts_once(self) -> list[Prompt]:
+        """The prompts the upstream lists now. Raises when it cannot be asked."""
+        return (await self._once("list_prompts", "prompts")).prompts
+
+    async def list_resource_templates_once(self) -> list[ResourceTemplate]:
+        """The resource templates the upstream lists now. Raises when it cannot be asked."""
+        return (await self._once("list_resource_templates", "resources")).resource_templates
+
+    async def complete_once(self, reference: Any, argument: dict[str, str],
+                            context_arguments: dict[str, str] | None) -> Any:
+        """The upstream's completion of one argument. Raises when it cannot be asked."""
+        return (await self._once("complete", "completions", reference, argument,
+                                 context_arguments)).completion
 
     async def list_tools(self) -> list[Tool]:
         return (await self._retrying("list_tools")).tools

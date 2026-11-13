@@ -586,7 +586,9 @@ upstream validates the rest. A parameter Python cannot name, such as `from`
 or `class`, is accepted and forwarded under its own name.
 
 Tool schemas are cached when you save, so the endpoint still mounts when the
-upstream is down — its tools then report the failure themselves.
+upstream is down; its tools then report the failure themselves. Resources and
+prompts are cached too, but only as the fallback for a list the upstream
+cannot answer live (see below).
 
 > Once an upstream is wrapped, firewall its own port to the hub. Otherwise the
 > authentication is decorative: the original open port is still there.
@@ -902,6 +904,28 @@ sandbox policy intact.
 
 Prompts are proxied too, keeping the names, descriptions and required flags
 they were published with.
+
+Tools come from the catalogue cached when you save. Resources, resource
+templates and prompts are listed live: when a client asks for the list, the hub
+asks the upstream once, within five seconds or the backend's timeout if that is
+shorter, and offers what it lists now, so an upstream whose resources come and
+go (a document per run, say) shows a new one without the backend being saved
+again. If the upstream cannot be asked, or does not offer resources or prompts
+at all, the cached catalogue answers instead of an error; after a list the
+upstream gave no answer to, the catalogue answers for thirty seconds without
+asking, so a launched server that is slow to start is waited for once rather
+than on every list. None of these lists is filtered by the tool selection or by
+an account's level, live or cached; reaching the backend at all is what decides
+who sees them.
+
+A resource the catalogue holds is listed and read as it was saved, so an MCP
+Apps interface keeps the policy you saved with it. Any other uri is read
+through to the upstream, which decides whether it can read it: one its template
+describes reads as it would straight from the upstream, and one it cannot read
+comes back with the upstream's own error, never with the hub's. A prompt is
+always rendered by the upstream, so its description and its refusals are the
+upstream's own, and completion of a prompt's or a template's argument is passed
+through to the upstream too.
 
 Known limits:
 
