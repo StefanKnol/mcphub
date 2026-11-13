@@ -36,6 +36,7 @@ import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import MCPError
 from mcp.types import Prompt, Resource, Tool
 
 log = logging.getLogger(__name__)
@@ -179,7 +180,39 @@ class Upstream:
                 log.info("upstream %s dropped, reconnecting (%s)", self._cfg.label, exc)
         raise AssertionError("unreachable")
 
+    async def _once(self, function_name: str, capability: str) -> Any:
+        """Ask the upstream once, without the reconnect-and-retry of `_retrying`.
+
+        For a question asked while a client waits, where one attempt is the
+        budget and the caller has an answer of its own to fall back on. A
+        protocol error (the upstream answered, and said no) leaves the session
+        alone: closing it would relaunch a stdio server on every list. A
+        transport failure closes it, so the next request reconnects.
+
+        An upstream whose handshake says it offers no such capability is not
+        asked at all, and the failure says so.
+        """
+        session = await self.session()
+        capabilities = session.server_capabilities
+        if capabilities is not None and getattr(capabilities, capability, None) is None:
+            raise UpstreamError(f"{self._cfg.label} does not offer {capability}.")
+        try:
+            return await getattr(session, function_name)()
+        except MCPError as exc:
+            raise UpstreamError(f"{self._cfg.label}: {exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - transport-level failure
+            await self.close()
+            raise UpstreamError(_explain(self._cfg.label, exc, self._stderr.tail())) from exc
+
     # ── introspection and forwarding ──────────────────────────────────────
+
+    async def list_resources_once(self) -> list[Resource]:
+        """The resources the upstream lists now. Raises when it cannot be asked."""
+        return (await self._once("list_resources", "resources")).resources
+
+    async def list_prompts_once(self) -> list[Prompt]:
+        """The prompts the upstream lists now. Raises when it cannot be asked."""
+        return (await self._once("list_prompts", "prompts")).prompts
 
     async def list_tools(self) -> list[Tool]:
         return (await self._retrying("list_tools")).tools

@@ -344,3 +344,290 @@ async def test_a_schema_that_is_not_an_object_schema_still_mounts():
     for name in ("no_schema", "only_type"):
         assert by_name[name].input_schema.get("type") == "object"
         await mcp.call_tool(name, {})
+
+
+# ── resources and prompts are listed live, with the catalogue as fallback ──
+#
+# A backend whose resource list is dynamic (a document per story run) used to
+# show only what it listed when it was saved. The list is asked of the upstream
+# now; the catalogue answers only when the upstream cannot be asked.
+
+import asyncio  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from mcp import Client  # noqa: E402
+from mcp.server.mcpserver.resources import FunctionResource  # noqa: E402
+from mcp.types import GetPromptResult, PromptMessage, TextContent  # noqa: E402
+from mcp.types import Prompt as UpstreamPrompt  # noqa: E402
+from mcp.types import Resource as UpstreamResource  # noqa: E402
+
+import mcphub.plugins.builtin.mcpproxy as proxy_module  # noqa: E402
+from mcphub.plugins.builtin.mcpproxy.live import ProxiedServer  # noqa: E402
+from mcphub.plugins.builtin.mcpproxy.upstream import Upstream, UpstreamConfig, UpstreamError  # noqa: E402
+
+SAVED_RESOURCE = {"uri": "story://runs/first", "name": "first run", "mimeType": "text/markdown"}
+NEW_RESOURCE = {"uri": "story://runs/second", "name": "second run", "mimeType": "text/markdown"}
+UI_RESOURCE = {
+    "uri": "ui://clock/app.html",
+    "name": "clock app",
+    "mimeType": "text/html;profile=mcp-app",
+    "_meta": {"ui": {"csp": {"connectDomains": ["https://example.com"]}}},
+}
+SAVED_PROMPT = {"name": "recap", "description": "Recap a run."}
+NEW_PROMPT = {"name": "next_scene", "description": "Plan the next scene.",
+              "arguments": [{"name": "run", "required": True}]}
+
+
+class LiveUpstream:
+    """Stands in for `Upstream`, holding what the upstream lists right now."""
+
+    def __init__(self, resources, prompts, *, down=False, delay_seconds=0.0):
+        self._cfg = SimpleNamespace(url="http://upstream/mcp", command="", timeout=30.0)
+        self.resources = [UpstreamResource.model_validate(r) for r in resources]
+        self.prompts = [UpstreamPrompt.model_validate(p) for p in prompts]
+        self.down = down
+        self.delay_seconds = delay_seconds
+        self.resource_list_calls = 0
+        self.prompt_list_calls = 0
+        self.tool_list_calls = 0
+        self.reads = []
+        self.prompt_calls = []
+
+    async def list_tools(self):
+        self.tool_list_calls += 1
+        return []
+
+    async def list_resources_once(self):
+        self.resource_list_calls += 1
+        await asyncio.sleep(self.delay_seconds)
+        if self.down:
+            raise UpstreamError("upstream is down")
+        return list(self.resources)
+
+    async def list_prompts_once(self):
+        self.prompt_list_calls += 1
+        await asyncio.sleep(self.delay_seconds)
+        if self.down:
+            raise UpstreamError("upstream is down")
+        return list(self.prompts)
+
+    async def read_resource(self, uri):
+        self.reads.append(uri)
+        resource = next(r for r in self.resources if str(r.uri) == uri)
+        return SimpleNamespace(contents=[SimpleNamespace(
+            text=f"contents of {uri}", blob=None, mime_type=resource.mime_type, meta=resource.meta)])
+
+    async def get_prompt(self, name, arguments):
+        self.prompt_calls.append((name, arguments))
+        return GetPromptResult(messages=[PromptMessage(
+            role="user", content=TextContent(type="text", text=f"{name}: {arguments}"))])
+
+
+def built_against(monkeypatch, upstream, **config):
+    """Build the backend as the hub does, with this stand-in as its upstream."""
+    monkeypatch.setattr(proxy_module, "_upstream", lambda instance: upstream)
+    return PLUGIN.build(instance(url="http://upstream/mcp", **config))
+
+
+def saved_catalogue(resources=(), prompts=(), tools=UPSTREAM_TOOLS):
+    return {
+        "tool_catalog": json.dumps(list(tools)),
+        "resource_catalog": json.dumps(list(resources)),
+        "prompt_catalog": json.dumps(list(prompts)),
+    }
+
+
+async def test_a_resource_that_appears_upstream_after_save_is_listed_and_readable(monkeypatch):
+    upstream = LiveUpstream([SAVED_RESOURCE, NEW_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, **saved_catalogue(resources=[SAVED_RESOURCE]))
+    assert isinstance(server, ProxiedServer)
+
+    uris = [str(r.uri) for r in await server.list_resources()]
+    assert uris == ["story://runs/first", "story://runs/second"]
+
+    contents = await server.read_resource("story://runs/second")
+    assert contents[0].content == "contents of story://runs/second"
+    assert contents[0].mime_type == "text/markdown"
+    assert upstream.reads == ["story://runs/second"]
+
+
+async def test_a_new_resource_is_readable_before_anyone_lists_it(monkeypatch):
+    """A client that already knows the uri, from a tool's answer say, reads it."""
+    upstream = LiveUpstream([SAVED_RESOURCE, NEW_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, **saved_catalogue(resources=[SAVED_RESOURCE]))
+    contents = await server.read_resource("story://runs/second")
+    assert contents[0].content == "contents of story://runs/second"
+    assert upstream.resource_list_calls == 1
+
+
+async def test_a_resource_the_upstream_does_not_list_now_is_not_read(monkeypatch):
+    upstream = LiveUpstream([SAVED_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, **saved_catalogue(resources=[SAVED_RESOURCE]))
+    with pytest.raises(Exception, match="Unknown resource"):
+        await server.read_resource("story://runs/never")
+    assert upstream.reads == []
+
+
+async def test_upstream_down_gives_the_cached_resource_list(monkeypatch):
+    upstream = LiveUpstream([], [], down=True)
+    server = built_against(monkeypatch, upstream,
+                           **saved_catalogue(resources=[SAVED_RESOURCE, UI_RESOURCE]))
+    uris = [str(r.uri) for r in await server.list_resources()]
+    assert uris == ["story://runs/first", "ui://clock/app.html"]
+
+
+async def test_a_slow_upstream_gives_the_cached_resource_list_within_the_timeout(monkeypatch):
+    """The backend's own timeout caps the wait, when it is the shorter of the two."""
+    upstream = LiveUpstream([SAVED_RESOURCE, NEW_RESOURCE], [], delay_seconds=5)
+    upstream._cfg.timeout = 0.2  # the backend's Timeout setting, as `_upstream` reads it
+    server = built_against(monkeypatch, upstream, **saved_catalogue(resources=[SAVED_RESOURCE]))
+    started = asyncio.get_running_loop().time()
+    uris = [str(r.uri) for r in await server.list_resources()]
+    assert asyncio.get_running_loop().time() - started < 2
+    assert uris == ["story://runs/first"]
+
+
+async def test_one_client_list_is_one_upstream_list(monkeypatch):
+    upstream = LiveUpstream([SAVED_RESOURCE], [SAVED_PROMPT])
+    server = built_against(monkeypatch, upstream,
+                           **saved_catalogue(resources=[SAVED_RESOURCE], prompts=[SAVED_PROMPT]))
+    await server.list_resources()
+    await server.list_prompts()
+    assert (upstream.resource_list_calls, upstream.prompt_list_calls) == (1, 1)
+
+
+async def test_a_ui_resource_keeps_its_meta_listed_live_and_cached(monkeypatch):
+    for down in (False, True):
+        upstream = LiveUpstream([UI_RESOURCE], [], down=down)
+        server = built_against(monkeypatch, upstream, **saved_catalogue(resources=[UI_RESOURCE]))
+        listed = next(r for r in await server.list_resources() if str(r.uri) == UI_RESOURCE["uri"])
+        assert listed.mime_type == "text/html;profile=mcp-app"
+        assert listed.meta["ui"]["csp"]["connectDomains"] == ["https://example.com"]
+
+
+async def test_a_cached_ui_resource_is_read_as_it_was_before(monkeypatch):
+    """Served by its mirrored entry, so the cached mime type and `_meta` go with it."""
+    upstream = LiveUpstream([UI_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, **saved_catalogue(resources=[UI_RESOURCE]))
+    contents = await server.read_resource(UI_RESOURCE["uri"])
+    assert contents[0].mime_type == "text/html;profile=mcp-app"
+    assert contents[0].meta["ui"]["csp"]["connectDomains"] == ["https://example.com"]
+    assert upstream.resource_list_calls == 0, "a cached resource is read without listing"
+
+
+async def test_a_ui_resource_new_since_save_keeps_its_meta_when_read(monkeypatch):
+    upstream = LiveUpstream([UI_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, **saved_catalogue())
+    contents = await server.read_resource(UI_RESOURCE["uri"])
+    assert contents[0].mime_type == "text/html;profile=mcp-app"
+    assert contents[0].meta["ui"]["csp"]["connectDomains"] == ["https://example.com"]
+
+
+async def test_the_tool_selection_does_not_filter_live_resources(monkeypatch):
+    """No gate was on resources before, and the live list adds none."""
+    upstream = LiveUpstream([SAVED_RESOURCE, NEW_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, tools=["list_containers"],
+                           **saved_catalogue(resources=[SAVED_RESOURCE]))
+    assert len(await server.list_resources()) == 2
+
+
+async def test_the_tools_path_is_unchanged(monkeypatch):
+    """Tools are still the catalogue's, selected, and listing them asks no one."""
+    upstream = LiveUpstream([SAVED_RESOURCE], [])
+    server = built_against(monkeypatch, upstream, tools=["list_containers"], **saved_catalogue())
+    assert [t.name for t in await server.list_tools()] == ["list_containers"]
+    assert upstream.tool_list_calls == 0
+    assert upstream.resource_list_calls == 0
+
+
+async def test_a_prompt_that_appears_upstream_after_save_is_listed_and_rendered(monkeypatch):
+    upstream = LiveUpstream([], [SAVED_PROMPT, NEW_PROMPT])
+    server = built_against(monkeypatch, upstream, **saved_catalogue(prompts=[SAVED_PROMPT]))
+    assert [p.name for p in await server.list_prompts()] == ["recap", "next_scene"]
+    result = await server.get_prompt("next_scene", {"run": "the ford"})
+    assert upstream.prompt_calls == [("next_scene", {"run": "the ford"})]
+    assert result.messages[0].content.text == "next_scene: {'run': 'the ford'}"
+
+
+async def test_upstream_down_gives_the_cached_prompt_list(monkeypatch):
+    upstream = LiveUpstream([], [], down=True)
+    server = built_against(monkeypatch, upstream, **saved_catalogue(prompts=[SAVED_PROMPT]))
+    assert [p.name for p in await server.list_prompts()] == ["recap"]
+    with pytest.raises(Exception, match="Unknown prompt"):
+        await server.get_prompt("next_scene", {"run": "x"})
+
+
+async def test_a_new_resource_is_listed_and_read_through_the_protocol():
+    """End to end, with the real `Upstream` talking to a real server in process.
+
+    The upstream gains a resource after the hub's catalogue was taken, and a
+    client of the hub lists it and reads it over JSON-RPC.
+    """
+    upstream_server = MCPServer("upstream")
+    upstream_server.add_resource(FunctionResource(
+        uri="story://runs/first", name="first run", mime_type="text/markdown", fn=lambda: "first"))
+    async with Client(upstream_server) as upstream_client:
+        upstream = Upstream(UpstreamConfig(url="http://upstream/mcp"))
+        upstream._session = upstream_client.session  # noqa: SLF001 - the in-process session
+        catalogue = [r.model_dump(by_alias=True, exclude_none=True)
+                     for r in await upstream.list_resources()]
+        hub_server = ProxiedServer("hub", upstream=upstream)
+        for resource in catalogue:
+            proxy_module.mirror_resource(hub_server, upstream, UpstreamResource.model_validate(resource))
+
+        upstream_server.add_resource(FunctionResource(
+            uri="story://runs/second", name="second run", mime_type="text/markdown",
+            fn=lambda: "second"))
+
+        async with Client(hub_server) as hub_client:
+            listed = await hub_client.list_resources()
+            assert [str(r.uri) for r in listed.resources] == ["story://runs/first",
+                                                              "story://runs/second"]
+            read = await hub_client.read_resource("story://runs/second")
+            assert read.contents[0].text == "second"
+            assert read.contents[0].mime_type == "text/markdown"
+
+
+class RecordingSession:
+    def __init__(self, capabilities, failure=None):
+        self.server_capabilities = capabilities
+        self.failure = failure
+        self.calls = 0
+
+    async def list_resources(self):
+        self.calls += 1
+        if self.failure is not None:
+            raise self.failure
+        return SimpleNamespace(resources=[])
+
+
+async def test_an_upstream_offering_no_resources_is_not_asked():
+    from mcp.types import ServerCapabilities
+    upstream = Upstream(UpstreamConfig(url="http://upstream/mcp"))
+    session = RecordingSession(ServerCapabilities())
+    upstream._session = session  # noqa: SLF001
+    with pytest.raises(UpstreamError, match="does not offer resources"):
+        await upstream.list_resources_once()
+    assert session.calls == 0
+
+
+async def test_a_refusal_from_the_upstream_keeps_the_session():
+    """Closing it would relaunch a stdio server on every list."""
+    from mcp.shared.exceptions import MCPError
+    upstream = Upstream(UpstreamConfig(url="http://upstream/mcp"))
+    session = RecordingSession(None, failure=MCPError(-32601, "Method not found"))
+    upstream._session = session  # noqa: SLF001
+    with pytest.raises(UpstreamError):
+        await upstream.list_resources_once()
+    assert upstream._session is session  # noqa: SLF001
+    assert session.calls == 1, "asked once, never retried"
+
+
+async def test_a_transport_failure_closes_the_session_and_is_not_retried():
+    upstream = Upstream(UpstreamConfig(url="http://upstream/mcp"))
+    session = RecordingSession(None, failure=ConnectionError("gone"))
+    upstream._session = session  # noqa: SLF001
+    with pytest.raises(UpstreamError):
+        await upstream.list_resources_once()
+    assert upstream._session is None  # noqa: SLF001
+    assert session.calls == 1
