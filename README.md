@@ -576,12 +576,14 @@ they are genuinely uncallable rather than merely hidden.
 different selections — a read-only `unraid-status` and an `unraid-admin` — and
 each is its own connector with its own token.
 
-Upstream tool schemas are preserved: the plugin synthesises a Python signature
-that reproduces the upstream JSON Schema, so descriptions, enums, required
-fields and `destructiveHint` all survive the hop. That round trip is exact for
-flat object schemas, which is every tool the Unraid agent exposes. Anything it
-cannot represent is named in the tool's own description rather than dropped
-quietly.
+Upstream tool schemas are passed on whole: what a client is offered is the
+upstream's own JSON Schema, copied as it is, so nested shapes (an array of
+objects and the fields of its items), descriptions, enums, defaults and
+required fields all survive the hop, and `destructiveHint` with them. The
+plugin still synthesises a Python signature for each tool, because the SDK
+runs a tool as a function, but that signature only gates a call loosely; the
+upstream validates the rest. A parameter Python cannot name, such as `from`
+or `class`, is accepted and forwarded under its own name.
 
 Tool schemas are cached when you save, so the endpoint still mounts when the
 upstream is down — its tools then report the failure themselves.

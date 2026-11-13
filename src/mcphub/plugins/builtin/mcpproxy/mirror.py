@@ -1,17 +1,31 @@
 """Re-expose an upstream server's tools as tools of our own.
 
-The SDK builds a tool's input schema by inspecting a Python function's
-signature — there is no way to hand it a JSON Schema directly. So rather than
-fight that, this synthesises a function whose signature *produces* the upstream
-schema when inspected, and the SDK's normal path does the rest.
+The SDK builds a tool from a Python function: it inspects the signature to
+make the input schema, and it validates a call against that signature before
+the function runs. There is no way to hand it a JSON Schema directly. So this
+synthesises a function whose signature accepts what the upstream's schema
+describes, and the SDK's normal path does the rest.
 
-That round trip is lossy for deeply nested schemas. It is exact for the flat
-object schemas that tools almost always use, which is every one of the 126
-tools on the Unraid agent.
+A signature cannot say everything a schema can. It can say "a list" but not
+"a list of objects with these fields", so a schema rebuilt from it loses every
+nested shape, and a client is left to guess them. That is why the two jobs are
+kept apart here:
+
+- **What a client is offered is the upstream's own schema, copied whole.** It
+  replaces the one the SDK generated, so nothing is lost and nothing is added
+  (no generated titles, no null offered beside every optional parameter).
+- **The signature only gates a call**, loosely: the right top-level kind for
+  each parameter, and nothing about what is inside a list or an object. The
+  upstream validates the rest, since the schema is its own.
+
+A parameter Python cannot name (`from`, `class`, `not-an-identifier`) is given
+a name of the proxy's own with the real one as its alias, so it is accepted
+and forwarded under the name the upstream gave it.
 """
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import keyword
@@ -49,51 +63,88 @@ def _annotation(schema: dict[str, Any]) -> Any:
         try:
             return Literal[tuple(schema["enum"])]  # type: ignore[misc]
         except TypeError:
-            return str
+            return Any
     declared = schema.get("type")
     if isinstance(declared, list):  # e.g. ["string", "null"]
         real = [t for t in declared if t != "null"]
-        base = _SCALARS.get(real[0], Any) if real else Any
-        return base | None if "null" in declared else base
+        # Several real types cannot be said as one Python type without refusing
+        # some of what the upstream allows, so the gate lets any of them through.
+        base = _SCALARS.get(real[0], Any) if len(real) == 1 else Any
+        return base | None if "null" in declared and base is not Any else base
     return _SCALARS.get(declared, Any)
 
 
 def _usable_name(name: str) -> bool:
-    """The parameter has to become a real Python parameter to be inspectable."""
-    return name.isidentifier() and not keyword.iskeyword(name) and name != "ctx"
+    """Whether the name can be a Python parameter and a model field as it is."""
+    return (
+        name.isidentifier()
+        and not keyword.iskeyword(name)
+        and name != "ctx"  # the SDK reads a parameter of this name as its own context
+        and not name.startswith("_")  # a model field may not start with an underscore
+    )
 
 
 def _build_signature(schema: dict[str, Any]) -> tuple[inspect.Signature, dict[str, Any], list[str]]:
+    """The signature that gates a call, and the names that could not be given one.
+
+    Only a property that is not a schema at all ends up in the third value.
+    A name Python cannot use is given a stand-in with the real name as its
+    alias; the SDK validates and forwards by alias, so the upstream receives
+    the argument under its own name.
+    """
     properties: dict[str, Any] = schema.get("properties") or {}
     required = set(schema.get("required") or ())
 
     params: list[inspect.Parameter] = []
     annotations: dict[str, Any] = {}
     skipped: list[str] = []
+    taken = {name for name in properties if isinstance(name, str)}
+
+    def stand_in() -> str:
+        number = 0
+        while f"argument_{number}" in taken:
+            number += 1
+        taken.add(f"argument_{number}")
+        return f"argument_{number}"
 
     # Required first: Python forbids a parameter without a default after one
     # with a default, even keyword-only ones read better this way.
     ordered = sorted(properties.items(), key=lambda kv: kv[0] not in required)
 
     for name, prop in ordered:
-        if not isinstance(prop, dict) or not _usable_name(name):
-            skipped.append(name)
+        if not isinstance(name, str) or not isinstance(prop, dict):
+            skipped.append(str(name))
             continue
+        python_name = name if _usable_name(name) else stand_in()
+        alias = None if python_name == name else name
         base = _annotation(prop)
         description = prop.get("description") or ""
         if name in required:
-            annotation = Annotated[base, Field(description=description)]
+            annotation = Annotated[base, Field(description=description, alias=alias)]
             default = inspect.Parameter.empty
         else:
-            annotation = Annotated[base | None, Field(default=None, description=description)]
+            optional = base if base is Any else base | None
+            annotation = Annotated[optional, Field(default=None, description=description, alias=alias)]
             default = None
         params.append(
-            inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, annotation=annotation, default=default)
+            inspect.Parameter(python_name, inspect.Parameter.KEYWORD_ONLY, annotation=annotation, default=default)
         )
-        annotations[name] = annotation
+        annotations[python_name] = annotation
 
     annotations["return"] = str
     return inspect.Signature(params, return_annotation=str), annotations, skipped
+
+
+def _schema_to_offer(schema: dict[str, Any]) -> dict[str, Any]:
+    """The upstream's schema as a client should see it: its own, copied whole.
+
+    A copy, so nothing done to what this hub serves can reach the upstream's
+    catalogue. An input schema is an object schema by the protocol; one that
+    does not say so is given the word and nothing else.
+    """
+    offered = copy.deepcopy(schema)
+    offered.setdefault("type", "object")
+    return offered
 
 
 def _flatten(result: Any) -> str:
@@ -189,6 +240,16 @@ def mirror_tool(mcp: MCPServer, upstream: Upstream, tool: UpstreamTool) -> bool:
         # our synthesised `-> str` would advertise a schema that is not true.
         structured_output=False,
     )
+
+    # The SDK has just written an input schema from the synthesised signature.
+    # That one is only as detailed as a signature can be, so it is replaced by
+    # the upstream's own. The SDK offers no way to pass a schema in, and reads
+    # this attribute when a client lists the tools.
+    registered = mcp._tool_manager.get_tool(name)  # noqa: SLF001
+    if registered is None or registered.fn is not forward:
+        # A tool of this name was already there, so ours was not registered.
+        return False
+    registered.parameters = _schema_to_offer(schema)
     return True
 
 
