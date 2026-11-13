@@ -33,7 +33,7 @@ import logging
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.mcpserver.prompts import Prompt
 from mcp.server.mcpserver.prompts.base import PromptArgument
 from mcp.server.mcpserver.resources import FunctionResource
@@ -41,9 +41,10 @@ from mcp.types import Prompt as UpstreamPrompt
 from mcp.types import Resource as UpstreamResource
 from mcp.types import Tool as UpstreamTool
 from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import MCPError
 from pydantic import Field
 
-from .upstream import Upstream, UpstreamError
+from .upstream import Upstream, UpstreamError, UpstreamRefusal
 
 log = logging.getLogger(__name__)
 
@@ -278,8 +279,13 @@ def mirror_resource(mcp: MCPServer, upstream: Upstream, resource: UpstreamResour
     async def read() -> str:
         try:
             return _resource_text(await upstream.read_resource(uri))
+        except UpstreamRefusal as exc:
+            # The upstream's own code and sentence, which the SDK passes on.
+            raise MCPError(exc.code, exc.message, {"uri": uri}) from exc
         except UpstreamError as exc:
-            raise ValueError(f"{uri}: {exc}") from exc
+            # A ResourceError keeps its sentence; anything else the SDK hides
+            # behind "Error reading resource".
+            raise ResourceError(f"{uri}: {exc}") from exc
 
     try:
         mcp.add_resource(FunctionResource(
@@ -313,6 +319,10 @@ def mirror_prompt(mcp: MCPServer, upstream: Upstream, prompt: UpstreamPrompt) ->
         supplied = {k: str(v) for k, v in kwargs.items() if v is not None}
         try:
             result = await upstream.get_prompt(name, supplied)
+        except UpstreamRefusal as exc:
+            # The SDK passes an MCPError on as it is; anything else becomes
+            # "Error rendering prompt", and the upstream's reason is lost.
+            raise MCPError(exc.code, exc.message) from exc
         except UpstreamError as exc:
             raise ValueError(f"{name}: {exc}") from exc
         # Dumped to dicts on purpose. The renderer keeps its own `Message`
