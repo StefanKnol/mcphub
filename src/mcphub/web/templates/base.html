@@ -28,6 +28,21 @@
 </dialog>
 
 <script>
+// The endpoint hint under a URL name box follows what is typed into it, so the
+// address you are about to hand a client is the one on the screen.
+(function () {
+  var slug = document.getElementById("slug");
+  if (!slug) return;
+  function show() {
+    var typed = slug.value.trim().toLowerCase();
+    document.querySelectorAll("[data-slug-preview]").forEach(function (el) {
+      el.textContent = typed || "this";
+    });
+  }
+  slug.addEventListener("input", show);
+  show();
+})();
+
 // Any form carrying data-confirm asks in-page instead of through confirm().
 (function () {
   var dialog = document.getElementById("app-confirm");
