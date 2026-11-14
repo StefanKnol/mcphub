@@ -30,16 +30,46 @@
 <script>
 // The endpoint hint under a URL name box follows what is typed into it, so the
 // address you are about to hand a client is the one on the screen.
+//
+// On a backend that does not exist yet, the URL name also follows the display
+// name until someone types in it themselves. Never on one that exists: its
+// URL name is an address connectors already point at, and retitling a backend
+// should not quietly move it.
 (function () {
   var slug = document.getElementById("slug");
   if (!slug) return;
+  var title = document.getElementById("title");
+  var following = false;
+
+  function slugify(text) {
+    return text.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+      .slice(0, 40).replace(/-+$/, "");
+  }
   function show() {
     var typed = slug.value.trim().toLowerCase();
     document.querySelectorAll("[data-slug-preview]").forEach(function (el) {
       el.textContent = typed || "this";
     });
   }
-  slug.addEventListener("input", show);
+
+  // Only a URL name that is empty or already matches the title follows it. One
+  // that differs on arrival was chosen — typed before a failed save, or offered
+  // by the registry — and is not this script's to overwrite.
+  if (title && slug.hasAttribute("data-follow-title")) {
+    following = slug.value === "" || slug.value === slugify(title.value);
+    title.addEventListener("input", function () {
+      if (!following) return;
+      slug.value = slugify(title.value);
+      show();
+    });
+  }
+  slug.addEventListener("input", function () {
+    // Typed in by hand, so it is theirs now. Emptied again, and it goes back
+    // to following, which is what clearing a box you had taken over means.
+    if (title && slug.hasAttribute("data-follow-title")) following = slug.value === "";
+    show();
+  });
   show();
 })();
 
